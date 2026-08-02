@@ -27,4 +27,4 @@ jobs:
         with:
           context: .
           push: true
-          tags: 192.168.1.2:3000/reeds/streamplay-service:latest
+          tags: 192.168.1.2:3000/reeds/cs-downloader:latest

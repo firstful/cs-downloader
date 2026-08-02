@@ -1,4 +1,4 @@
-"""StreamPlay Service — FastAPI app.
+"""StreamPlay Service — FastAPI app — CloudStream-style downloader
 
 Emulates the CloudStream MainAPI model over HTTP:
   search -> load (episodes) -> resolve links -> enqueue download -> poll -> fetch file.
