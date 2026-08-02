@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from .base import Provider
 from .embed2 import TwoEmbedProvider
+from .hindmoviez import HindmoviezProvider
 from .tmdb import TMDBProvider
 
 _registry: dict[str, Provider] = {}
@@ -34,6 +35,7 @@ def _register(p: Provider) -> None:
 def init_registry() -> None:
     _register(TMDBProvider())
     _register(TwoEmbedProvider())
+    _register(HindmoviezProvider())
     # Experimental slots (endpoints from StreamPlay.cs3 v658, decompiled):
     _register(_Experimental("xpass", "Xpass", "https://play.xpass.top/e/{movie,tv}/{tmdbId}; video API behind obfuscated mainmini.js"))
     _register(_Experimental("peachify", "Peachify", "servers https://usa.eat-peach.sbs/{holly,multi,ice,air,net} + uwu.peachify.top/moviebox"))
