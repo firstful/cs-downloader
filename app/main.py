@@ -1,0 +1,174 @@
+"""StreamPlay Service — FastAPI app.
+
+Emulates the CloudStream MainAPI model over HTTP:
+  search -> load (episodes) -> resolve links -> enqueue download -> poll -> fetch file.
+"""
+from __future__ import annotations
+
+import os
+import time
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
+from pydantic import ValidationError
+
+from . import config
+from . import db
+from . import worker
+from .models import DownloadRequest, LinksRequest, LinksResponse, Job
+from .providers import registry
+from .providers.tmdb import TMDBProvider
+
+app = FastAPI(title="StreamPlay Service", version="1.0.0")
+
+
+@app.on_event("startup")
+def _startup():
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    os.makedirs(config.DOWNLOAD_DIR, exist_ok=True)
+    db.init_db()
+    registry.init_registry()
+    worker.start()
+
+
+@app.on_event("shutdown")
+def _shutdown():
+    worker.stop()
+
+
+# ---- health / meta ---------------------------------------------------------
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+
+
+@app.get("/api/providers")
+def providers():
+    return {"providers": [p.describe() for p in registry.all_providers()]}
+
+
+# ---- CloudStream-style search / load ---------------------------------------
+
+@app.get("/api/search")
+def search(q: str = Query(..., min_length=1), page: int = 1):
+    tmdb: TMDBProvider = registry.metadata_provider()  # type: ignore
+    return {"query": q, "page": page, "results": [r.model_dump() for r in tmdb.search(q, page)]}
+
+
+@app.get("/api/load")
+def load(url: str):
+    tmdb: TMDBProvider = registry.metadata_provider()  # type: ignore
+    data = tmdb.load(url)
+    if not data:
+        raise HTTPException(404, f"no metadata for {url}")
+    return data.model_dump()
+
+
+# ---- stream links ----------------------------------------------------------
+
+@app.post("/api/links")
+def links(req: LinksRequest):
+    if not req.imdb_id and not req.tmdb_id:
+        raise HTTPException(400, "imdb_id or tmdb_id required")
+
+    # resolve imdb id via tmdb if only tmdb_id given
+    imdb_id = req.imdb_id
+    if not imdb_id and req.tmdb_id:
+        tmdb: TMDBProvider = registry.metadata_provider()  # type: ignore
+        loaded = tmdb.load(f"tmdb://{req.tmdb_id}/{req.media_type}")
+        if loaded and loaded.imdb_id:
+            imdb_id = loaded.imdb_id
+    if not imdb_id:
+        raise HTTPException(400, "could not resolve imdb_id (2embed needs it)")
+
+    wanted = req.providers or [p.id for p in registry.source_providers()]
+    out = []
+    results = {}
+    for pid in wanted:
+        prov = registry.get(pid)
+        if not prov or not prov.enabled:
+            results[pid] = {"status": "skipped", "note": "disabled or unknown"}
+            continue
+        try:
+            links_list = prov.resolve(req.model_copy(update={"imdb_id": imdb_id}))
+            results[pid] = {"status": "ok", "count": len(links_list)}
+            out.extend(l.model_dump() for l in links_list)
+        except Exception as e:  # noqa: BLE001
+            results[pid] = {"status": "error", "error": f"{type(e).__name__}: {e}"}
+    return LinksResponse(links=out, provider_results=results).model_dump()
+
+
+# ---- downloads -------------------------------------------------------------
+
+@app.post("/api/downloads")
+def enqueue(req: DownloadRequest):
+    if req.media_type not in ("movie", "tv"):
+        raise HTTPException(400, "media_type must be movie|tv")
+    if req.media_type == "tv" and (not req.season or not req.episode):
+        raise HTTPException(400, "tv downloads need season + episode")
+
+    title = req.title or ""
+    if not title:
+        tmdb: TMDBProvider = registry.metadata_provider()  # type: ignore
+        loaded = tmdb.load(f"tmdb://{req.tmdb_id}/{req.media_type}") if req.tmdb_id else None
+        if loaded:
+            suffix = ""
+            if req.media_type == "tv":
+                suffix = f" S{req.season:02d}E{req.episode:02d}"
+            title = f"{loaded.title} ({loaded.year}){suffix}"
+    if not title:
+        title = f"{req.media_type}-{req.tmdb_id or req.imdb_id}"
+
+    job_id = db.create_job(
+        title=title,
+        provider=req.provider,
+        tmdb_id=req.tmdb_id,
+        imdb_id=req.imdb_id,
+        media_type=req.media_type,
+        season=req.season,
+        episode=req.episode,
+        quality=req.quality,
+    )
+    worker.enqueue(job_id)
+    return {"id": job_id, "status": "queued"}
+
+
+@app.get("/api/downloads")
+def downloads(limit: int = 50):
+    return {"jobs": db.list_jobs(limit)}
+
+
+@app.get("/api/downloads/{job_id}")
+def job_status(job_id: int):
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    return job
+
+
+@app.get("/api/downloads/{job_id}/file")
+def job_file(job_id: int):
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    if job["status"] != "done" or not job["filename"]:
+        raise HTTPException(409, f"file not ready (status={job['status']})")
+    path = os.path.join(config.DOWNLOAD_DIR, job["filename"])
+    if not os.path.exists(path):
+        raise HTTPException(404, "file missing on disk")
+    return FileResponse(path, filename=job["filename"], media_type="application/octet-stream")
+
+
+@app.delete("/api/downloads/{job_id}")
+def job_delete(job_id: int):
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    if job["filename"]:
+        try:
+            os.remove(os.path.join(config.DOWNLOAD_DIR, job["filename"]))
+        except OSError:
+            pass
+    db.delete_job(job_id)
+    return {"deleted": job_id}
