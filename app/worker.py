@@ -45,6 +45,22 @@ def _progress_hook(job_id: int, d: dict):
         db.update_job(job_id, status="downloading", progress=99.0)
 
 
+def _remux_mp4(path: str) -> str:
+    """Force an explicit ffmpeg remux to mp4 (yt-dlp remux_video skips HLS TS)."""
+    if not path or not os.path.exists(path):
+        return path
+    import subprocess
+    out = os.path.splitext(path)[0] + ".remux.mp4"
+    r = subprocess.run(
+        [config.FFMPEG_BIN, "-y", "-i", path, "-c", "copy", "-movflags", "+faststart", out],
+        capture_output=True, text=True, timeout=1800,
+    )
+    if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 0:
+        os.replace(out, path)
+        return path
+    return path
+
+
 def _run_ytdlp(job_id: int, url: str, out_dir: str, out_tmpl: str,
                referer: str | None = None, headers: dict | None = None) -> str:
     """Download url to out_dir. Returns final file path."""
@@ -155,6 +171,7 @@ def _process(job_id: int):
                 headers=link.headers,
             )
             if path and os.path.exists(path) and os.path.getsize(path) > 0:
+                path = _remux_mp4(path)
                 size = os.path.getsize(path)
                 # move into flat downloads dir with a stable name
                 final = os.path.join(config.DOWNLOAD_DIR, f"{job_id}_{os.path.basename(path)}")
