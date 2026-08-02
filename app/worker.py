@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import queue
+import json
 import re
 import threading
 import time
@@ -26,6 +27,25 @@ _job_lock = threading.Lock()
 def _safe_name(title: str) -> str:
     name = re.sub(r'[^\w\-. ()]+', "_", title)
     return name.strip(" _.") or "download"
+
+
+def _write_sidecar(final: str, job: dict) -> None:
+    """Write a .json metadata sidecar next to the finished file for the ingest watcher."""
+    try:
+        meta = {
+            "media_type": job.get("media_type") or "movie",
+            "title": job.get("title") or "",
+            "season": job.get("season"),
+            "episode": job.get("episode"),
+            "quality": job.get("quality"),
+            "provider": job.get("provider"),
+            "downloaded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        sidecar = final + ".json"
+        with open(sidecar, "w") as f:
+            json.dump(meta, f)
+    except Exception:  # noqa: BLE001
+        pass  # sidecar is best-effort; ingest can fall back to filename parsing
 
 
 def _progress_hook(job_id: int, d: dict):
@@ -178,6 +198,7 @@ def _process(job_id: int):
                 os.replace(path, final)
                 db.update_job(job_id, status="done", progress=100.0,
                               filename=os.path.basename(final), file_size=size)
+                _write_sidecar(final, job)
                 return
         except Exception as e:  # noqa: BLE001
             last_err = f"{type(e).__name__}: {e}"
