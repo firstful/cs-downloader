@@ -87,6 +87,7 @@ class TMDBProvider(Provider):
             backdrop=_img(d.get("backdrop_path"), orig=True),
             overview=d.get("overview"),
             imdb_id=(d.get("external_ids") or {}).get("imdb_id"),
+            tvdb_id=_int_or_none((d.get("external_ids") or {}).get("tvdb_id")),
             url=f"tmdb://{d.get('id', 0)}/movie",
         )
 
@@ -116,6 +117,7 @@ class TMDBProvider(Provider):
             backdrop=_img(d.get("backdrop_path"), orig=True),
             overview=d.get("overview"),
             imdb_id=(d.get("external_ids") or {}).get("imdb_id"),
+            tvdb_id=_int_or_none((d.get("external_ids") or {}).get("tvdb_id")),
             seasons=seasons,
             episodes=eps,
             url=f"tmdb://{d.get('id', 0)}/tv",
@@ -138,4 +140,11 @@ def _year(date: Optional[str]) -> Optional[int]:
     try:
         return int(date[:4])
     except ValueError:
+        return None
+
+
+def _int_or_none(v) -> Optional[int]:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
         return None

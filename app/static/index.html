@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>media · cs-downloader</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>🎬 media</h1>
+  <p class="sub">Search → pick → queue. Downloads transcribe into the Jellyfin library.</p>
+</header>
+
+<main>
+  <section id="search">
+    <input id="q" type="search" placeholder="Search movies & shows… (TMDB / TVDB-correlated)" autocomplete="off">
+    <div id="results" class="results"></div>
+  </section>
+
+  <section id="detail" class="hidden">
+    <div id="detail-body"></div>
+  </section>
+
+  <section id="wanted">
+    <h2>Desired library</h2>
+    <div id="wanted-list" class="wanted-list"></div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

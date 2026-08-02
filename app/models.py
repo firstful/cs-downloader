@@ -36,6 +36,7 @@ class LoadResponse(BaseModel):
     backdrop: Optional[str] = None
     overview: Optional[str] = None
     imdb_id: Optional[str] = None
+    tvdb_id: Optional[int] = None
     seasons: list[int] = Field(default_factory=list)
     episodes: list[Episode] = Field(default_factory=list)   # tv only
     url: str = ""
@@ -74,6 +75,17 @@ class DownloadRequest(BaseModel):
     title: Optional[str] = None
     provider: str = "2embed"
     quality: Optional[str] = None
+
+
+class WantedRequest(BaseModel):
+    title: str = ""
+    provider: str = "hindmoviez"
+    source_url: str = ""               # optional — else resolved from tmdb_id
+    tmdb_id: Optional[int] = None
+    media_type: str = "movie"
+    quality: Optional[str] = None
+    season: Optional[int] = None
+    episode: Optional[int] = None
 
 class Job(BaseModel):
     id: int

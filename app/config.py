@@ -23,6 +23,11 @@ REQUEST_TIMEOUT = int(os.environ.get("SP_HTTP_TIMEOUT", "25"))
 MAX_CONCURRENT_DOWNLOADS = int(os.environ.get("SP_MAX_CONCURRENT", "2"))
 MAX_RETRIES = int(os.environ.get("SP_MAX_RETRIES", "2"))
 
+# Reconciler (wanted-library): sweep cadence + retry backoff for failed attempts
+RECONCILE_INTERVAL = int(os.environ.get("SP_RECONCILE_INTERVAL", "900"))   # seconds between sweeps
+RETRY_SECONDS = int(os.environ.get("SP_RETRY_SECONDS", "14400"))           # 4h default retry window
+MAX_RECONCILE_PER_SWEEP = int(os.environ.get("SP_MAX_RECONCILE_PER_SWEEP", "2"))
+
 # yt-dlp
 YTDLP_BIN = os.environ.get("SP_YTDLP_BIN", "yt-dlp")       # path or python module
 FFMPEG_BIN = os.environ.get("SP_FFMPEG_BIN", "ffmpeg")

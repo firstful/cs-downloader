@@ -10,16 +10,22 @@ import time
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from . import config
 from . import db
+from . import reconciler
 from . import worker
-from .models import DownloadRequest, LinksRequest, LinksResponse, Job
+from .models import DownloadRequest, LinksRequest, LinksResponse, Job, WantedRequest
 from .providers import registry
+from .providers.hindmoviez import HindmoviezProvider
 from .providers.tmdb import TMDBProvider
 
 app = FastAPI(title="StreamPlay Service", version="1.0.0")
+
+_STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
 @app.on_event("startup")
@@ -29,14 +35,21 @@ def _startup():
     db.init_db()
     registry.init_registry()
     worker.start()
+    reconciler.start()
 
 
 @app.on_event("shutdown")
 def _shutdown():
+    reconciler.stop()
     worker.stop()
 
 
 # ---- health / meta ---------------------------------------------------------
+
+@app.get("/")
+def index():
+    return FileResponse(os.path.join(_STATIC_DIR, "index.html"))
+
 
 @app.get("/health")
 def health():
@@ -172,3 +185,82 @@ def job_delete(job_id: int):
             pass
     db.delete_job(job_id)
     return {"deleted": job_id}
+
+
+# ---- wanted library (persistent desired-items + reconciler) ---------------
+
+@app.post("/api/wanted")
+def wanted_add(req: WantedRequest):
+    prov = registry.get(req.provider)
+    if not prov or not getattr(prov, "enabled", False):
+        raise HTTPException(400, f"unknown or disabled provider: {req.provider}")
+
+    source_url, provider = req.source_url, req.provider
+    title = req.title
+
+    # If no source_url, resolve it from tmdb_id (hindmoviez post search -> 2embed imdb fallback)
+    if not source_url and req.tmdb_id:
+        tmdb: TMDBProvider = registry.metadata_provider()  # type: ignore
+        loaded = tmdb.load(f"tmdb://{req.tmdb_id}/{req.media_type}")
+        if not loaded:
+            raise HTTPException(404, "tmdb metadata not found")
+        if not title:
+            title = f"{loaded.title} ({loaded.year})" if loaded.year else loaded.title
+        hm: HindmoviezProvider = registry.get("hindmoviez")  # type: ignore
+        matches = hm.search(loaded.title)
+        best = None
+        for m in matches:
+            if m.year and loaded.year and m.year == loaded.year:
+                best = m
+                break
+        if best is None and matches:
+            best = matches[0]
+        if best:
+            source_url, provider = best.url, "hindmoviez"
+        elif loaded.imdb_id:
+            source_url, provider = loaded.imdb_id, "2embed"
+        if not source_url:
+            raise HTTPException(404, "no source found on hindmoviez or 2embed")
+
+    if not source_url:
+        raise HTTPException(400, "source_url or tmdb_id required")
+    if not title:
+        title = source_url
+
+    wid = db.create_wanted(title, provider, source_url,
+                           req.media_type, req.quality, req.season, req.episode)
+    # first sweep happens soon after startup; nudge the reconciler for fast kickoff
+    reconciler.nudge()
+    return db.get_wanted(wid)
+
+
+@app.get("/api/wanted")
+def wanted_list(status: str | None = None):
+    return {"wanted": db.list_wanted(status)}
+
+
+@app.get("/api/wanted/{wanted_id}")
+def wanted_get(wanted_id: int):
+    w = db.get_wanted(wanted_id)
+    if not w:
+        raise HTTPException(404, "no such wanted item")
+    return w
+
+
+@app.delete("/api/wanted/{wanted_id}")
+def wanted_delete(wanted_id: int):
+    w = db.get_wanted(wanted_id)
+    if not w:
+        raise HTTPException(404, "no such wanted item")
+    db.delete_wanted(wanted_id)
+    return {"deleted": wanted_id}
+
+
+@app.post("/api/wanted/{wanted_id}/retry")
+def wanted_retry(wanted_id: int):
+    w = db.get_wanted(wanted_id)
+    if not w:
+        raise HTTPException(404, "no such wanted item")
+    db.update_wanted(wanted_id, status="wanted", job_id=None, next_attempt_at=0)
+    reconciler.nudge()
+    return db.get_wanted(wanted_id)
