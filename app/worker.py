@@ -57,6 +57,7 @@ def _run_ytdlp(job_id: int, url: str, out_dir: str, out_tmpl: str,
         "retries": config.MAX_RETRIES,
         "fragment_retries": config.MAX_RETRIES,
         "concurrent_fragment_downloads": 4,
+        "remux_video": "mp4",
         "progress_hooks": [lambda d: _progress_hook(job_id, d)],
         "http_headers": {
             "User-Agent": config.USER_AGENT,
