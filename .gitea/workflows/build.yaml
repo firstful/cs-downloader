@@ -3,7 +3,6 @@ name: build-image
 on:
   push:
     branches: [main]
-    paths: ['app/**', 'Dockerfile', 'requirements.txt']
 
 jobs:
   build:
