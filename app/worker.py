@@ -82,6 +82,7 @@ def _write_sidecar(final: str, job: dict) -> None:
             "episode": job.get("episode"),
             "quality": job.get("quality"),
             "provider": job.get("provider"),
+            "kid_friendly": bool(job.get("kid_friendly")),
             "downloaded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         sidecar = final + ".json"

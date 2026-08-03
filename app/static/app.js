@@ -82,6 +82,10 @@ function renderDetail() {
                 `<option value="${q}" ${q === state.quality ? "selected" : ""}>${q}</option>`).join("")}
             </select>
           </label>
+          <label class="kf-wrap">
+            <input type="checkbox" id="kid-friendly">
+            <b>Kid Friendly</b> <span class="muted">(route to the Kids library)</span>
+          </label>
           ${isTv ? `
           <label class="pick-all-wrap">
             <input type="checkbox" id="pick-all">
@@ -179,6 +183,7 @@ async function addWanted() {
   const base = {
     tmdb_id: d.id, media_type: d.media_type, title: d.year ? `${d.title} (${d.year})` : d.title,
     quality: state.quality,
+    kid_friendly: $("#kid-friendly")?.checked ?? false,
   };
   try {
     let res;
@@ -220,6 +225,7 @@ async function loadWanted() {
     $("#wanted-list").innerHTML = list.map((w) => `
       <div class="wcard">
         <span class="st st-${esc(w.status)}">${esc(w.status)}</span>
+        ${w.kid_friendly ? `<span class="st st-kid">kids</span>` : ""}
         <div class="t">${esc(w.title)}</div>
         <div class="s">${esc(w.provider)}${w.quality ? " · " + esc(w.quality) : ""}${w.season ? ` · S${w.season}` : ""}${w.episode ? `E${w.episode}` : ""}${w.attempt_count ? ` · attempt ${w.attempt_count}` : ""}</div>
         ${w.last_error ? `<div class="err">${esc(w.last_error)}</div>` : ""}

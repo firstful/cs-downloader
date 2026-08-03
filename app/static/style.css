@@ -40,6 +40,8 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .muted { color: var(--muted); font-weight: 400; }
 .ep-tree { margin-top: 10px; max-height: 320px; overflow: auto; border: 1px solid var(--border);
   border-radius: 8px; padding: 8px 10px; background: var(--panel2); }
+.kf-wrap { display: inline-flex; align-items: center; gap: 4px; }
+.st-kid { background: #7cc17c; color: #0a2f0a; }
 .pick-all-wrap { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
   border: 1px solid var(--accent); border-radius: 8px; color: var(--text); cursor: pointer; }
 .tree-season { margin: 4px 0 8px; }

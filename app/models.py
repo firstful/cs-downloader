@@ -88,6 +88,7 @@ class WantedRequest(BaseModel):
     episode: Optional[int] = None    # legacy single-episode add
     seasons: list[int] = Field(default_factory=list)      # whole seasons → enumerate eps
     episodes: list[dict] = Field(default_factory=list)    # [{"season":1,"episode":3}, ...] partial picks
+    kid_friendly: bool = False                            # route to the Kids library
 
 class Job(BaseModel):
     id: int
