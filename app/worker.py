@@ -7,9 +7,12 @@ import json
 import re
 import threading
 import time
+import logging
 
 from . import config
 from . import db
+
+log = logging.getLogger("worker")
 
 # Use yt-dlp python API if available, else shell out.
 try:
@@ -22,6 +25,46 @@ _jobs: queue.Queue = queue.Queue()
 _stop = threading.Event()
 _threads: list[threading.Thread] = []
 _job_lock = threading.Lock()
+
+# ---- rate limiting (sliding window) -----------------------------------------
+# Records (timestamp, bytes) of completed fragment chunks; the worker waits
+# before starting the next download while the window is over the limit.
+_ratelock = threading.Lock()
+_rate_buckets: list[tuple[float, int]] = []   # [(ts, bytes), ...]
+_last_bytes: dict[int, int] = {}               # job_id -> last hook downloaded_bytes
+
+
+def _rate_used() -> int:
+    """Bytes downloaded in the last RATE_WINDOW_SECONDS."""
+    cutoff = time.time() - config.RATE_WINDOW_SECONDS
+    with _ratelock:
+        return sum(b for ts, b in _rate_buckets if ts >= cutoff)
+
+
+def _rate_record(nbytes: int) -> None:
+    with _ratelock:
+        _rate_buckets.append((time.time(), nbytes))
+
+
+def _rate_wait() -> None:
+    """Block until the sliding window has room (limit per RATE_WINDOW_SECONDS)."""
+    while not _stop.is_set():
+        used = _rate_used()
+        if used < config.RATE_LIMIT_BYTES:
+            return
+        # oldest record falls out of the window; sleep until then (poll cheaply)
+        cutoff = time.time() - config.RATE_WINDOW_SECONDS
+        with _ratelock:
+            oldest = min((ts for ts, _ in _rate_buckets if ts >= cutoff), default=time.time())
+        wait = max(1.0, oldest + config.RATE_WINDOW_SECONDS - time.time())
+        log.warning("rate limit: %d/%d bytes in window — waiting %.0fs",
+                    used, config.RATE_LIMIT_BYTES, wait)
+        _stop.wait(min(wait, 30.0))
+
+
+def _rate_reset() -> None:
+    with _ratelock:
+        _rate_buckets.clear()
 
 
 def _safe_name(title: str) -> str:
@@ -61,6 +104,11 @@ def _progress_hook(job_id: int, d: dict):
             bytes_downloaded=int(done),
             total_bytes=int(total) if total else None,
         )
+        # record only the delta since the previous hook call (per job)
+        prev = _last_bytes.get(job_id, 0)
+        if done > prev:
+            _rate_record(int(done - prev))
+        _last_bytes[job_id] = int(done)
     elif status == "finished":
         db.update_job(job_id, status="downloading", progress=99.0)
 
@@ -167,6 +215,10 @@ def _process(job_id: int):
         providers=[prov.id],
     )
     try:
+        # Wait for rate-limit headroom before spending API calls / bandwidth.
+        # (A long resolve blocks this worker, which is exactly what we want: the
+        # serial queue paces itself to the 10GiB/10min window.)
+        _rate_wait()
         links = prov.resolve(req)
     except Exception as e:
         db.update_job(job_id, status="error", error=f"resolve failed: {e}")
@@ -202,6 +254,7 @@ def _process(job_id: int):
                 db.record_provider_attempt(job["provider"], ok=True,
                                            bytes_downloaded=size,
                                            quality=link.quality or job.get("quality"))
+                _last_bytes.pop(job_id, None)
                 return
         except Exception as e:  # noqa: BLE001
             last_err = f"{type(e).__name__}: {e}"

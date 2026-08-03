@@ -23,6 +23,10 @@ REQUEST_TIMEOUT = int(os.environ.get("SP_HTTP_TIMEOUT", "25"))
 MAX_CONCURRENT_DOWNLOADS = int(os.environ.get("SP_MAX_CONCURRENT", "2"))
 MAX_RETRIES = int(os.environ.get("SP_MAX_RETRIES", "2"))
 
+# Rate limiting: max bytes per rolling window (default 10GiB / 10 min)
+RATE_LIMIT_BYTES = int(os.environ.get("SP_RATE_LIMIT_BYTES", str(10 * 1024 ** 3)))
+RATE_WINDOW_SECONDS = int(os.environ.get("SP_RATE_WINDOW_SECONDS", "600"))
+
 # Reconciler (wanted-library): sweep cadence + retry backoff for failed attempts
 RECONCILE_INTERVAL = int(os.environ.get("SP_RECONCILE_INTERVAL", "900"))   # seconds between sweeps
 RETRY_SECONDS = int(os.environ.get("SP_RETRY_SECONDS", "14400"))           # 4h default retry window
