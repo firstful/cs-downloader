@@ -36,6 +36,18 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .ep-list .ep { padding: 3px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; }
 .ep-list .ep:hover { background: var(--panel2); }
 .ep-list .ep.sel { background: var(--accent); color: #08131f; }
+/* season/episode checkbox tree */
+.muted { color: var(--muted); font-weight: 400; }
+.ep-tree { margin-top: 10px; max-height: 320px; overflow: auto; border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; background: var(--panel2); }
+.pick-all-wrap { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+  border: 1px solid var(--accent); border-radius: 8px; color: var(--text); cursor: pointer; }
+.tree-season { margin: 4px 0 8px; }
+.tree-season .s-head { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 3px 0; }
+.tree-season .s-head input, .tree-ep input, .pick-all-wrap input { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
+.tree-eps { margin: 2px 0 4px 26px; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 2px 10px; }
+.tree-ep { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; padding: 2px 4px; border-radius: 5px; }
+.tree-ep:hover { background: var(--panel); }
 #wanted { margin-top: 28px; }
 #wanted h2 { font-size: 18px; }
 .wanted-list { display: grid; gap: 8px; }

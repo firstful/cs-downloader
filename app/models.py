@@ -84,8 +84,10 @@ class WantedRequest(BaseModel):
     tmdb_id: Optional[int] = None
     media_type: str = "movie"
     quality: Optional[str] = None
-    season: Optional[int] = None
-    episode: Optional[int] = None
+    season: Optional[int] = None       # legacy single-season add
+    episode: Optional[int] = None      # legacy single-episode add
+    seasons: list[int] = Field(default_factory=list)      # whole seasons → enumerate eps
+    episodes: list[dict] = Field(default_factory=list)    # [{"season":1,"episode":3}, ...] partial picks
 
 class Job(BaseModel):
     id: int

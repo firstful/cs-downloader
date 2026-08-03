@@ -94,7 +94,7 @@ class TMDBProvider(Provider):
     def _tv_load(self, d: dict) -> LoadResponse:
         seasons = [s.get("season_number") for s in d.get("seasons", []) if s.get("season_number", 0) > 0]
         eps: list[Episode] = []
-        for sn in seasons[:8]:  # cap season fetch to keep load() fast
+        for sn in seasons[:40]:  # cap season fetch to keep load() fast (40 covers long-running shows)
             sdata = self._get(f"/tv/{d.get('id')}/season/{sn}")
             if not sdata:
                 continue

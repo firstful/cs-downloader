@@ -3,8 +3,9 @@
 
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const pad = (n) => String(n).padStart(2, "0");
 
-const state = { results: [], selected: null, loaded: null, season: 1, episode: null, quality: null };
+const state = { results: [], selected: null, loaded: null, quality: null, picked: new Set() };
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -49,12 +50,12 @@ async function selectResult(i) {
   const r = state.results[i];
   $("#results").innerHTML = "";
   state.selected = r;
+  state.picked = new Set();
   const url = `tmdb://${r.id}/${r.media_type}`;
   try {
     const d = await api(`/api/load?url=${encodeURIComponent(url)}`);
     state.loaded = d;
     state.quality = r.media_type === "tv" ? "720p" : "1080p";
-    state.season = 1; state.episode = null;
     renderDetail();
   } catch (err) { $("#detail-body").innerHTML = `<div class="msg err">${esc(err.message)}</div>`; }
 }
@@ -63,7 +64,8 @@ function renderDetail() {
   const d = state.loaded, r = state.selected;
   const isTv = d.media_type === "tv";
   const seasons = (d.seasons || []).length ? d.seasons : [1];
-  const eps = (d.episodes || []).filter((e) => e.season === state.season);
+  const epsBySeason = {};
+  (d.episodes || []).forEach((e) => { (epsBySeason[e.season] = epsBySeason[e.season] || []).push(e); });
   const tvdb = d.tvdb_id ? `<span class="pill">TVDB ${d.tvdb_id}</span>` : "";
   $("#detail").classList.remove("hidden");
   $("#detail-body").innerHTML = `
@@ -81,41 +83,130 @@ function renderDetail() {
             </select>
           </label>
           ${isTv ? `
-          <label>Season
-            <select id="season">
-              ${seasons.map((s) => `<option value="${s}" ${s === state.season ? "selected" : ""}>${s}</option>`).join("")}
-            </select>
-          </label>
-          <label>Episode
-            <select id="episode">
-              <option value="">whole season (pack)</option>
-              ${eps.map((e) => `<option value="${e.episode}">E${String(e.episode).padStart(2, "0")}${e.title ? " · " + esc(e.title) : ""}</option>`).join("")}
-            </select>
+          <label class="pick-all-wrap">
+            <input type="checkbox" id="pick-all">
+            <b>Select all</b> <span class="muted">(every season &amp; episode)</span>
           </label>` : ""}
-          <button class="primary" id="add-wanted">Add to library</button>
+        </div>
+        ${isTv ? `<div class="ep-tree" id="ep-tree"></div>` : ""}
+        <div class="controls">
+          <button class="primary" id="add-wanted">${isTv ? "Add selected to library" : "Add to library"}</button>
+          <span id="pick-count" class="muted"></span>
         </div>
         <div id="wmsg"></div>
       </div>
     </div>`;
   if (isTv) {
-    $("#season").addEventListener("change", (e) => { state.season = +e.target.value; state.episode = null; renderDetail(); });
-    $("#episode").addEventListener("change", (e) => { state.episode = e.target.value ? +e.target.value : null; });
+    buildEpTree(seasons, epsBySeason);
+    $("#pick-all").addEventListener("change", (e) => {
+      const on = e.target.checked;
+      seasons.forEach((sn) => (epsBySeason[sn] || []).forEach((ep) => {
+        const key = `s${sn}e${ep.episode}`;
+        if (on) state.picked.add(key); else state.picked.delete(key);
+      }));
+      syncTree(seasons, epsBySeason);
+    });
   }
   $("#quality").addEventListener("change", (e) => { state.quality = e.target.value; });
   $("#add-wanted").addEventListener("click", addWanted);
+  updatePickCount();
+}
+
+function buildEpTree(seasons, epsBySeason) {
+  const tree = $("#ep-tree");
+  tree.innerHTML = seasons.map((sn) => {
+    const eps = epsBySeason[sn] || [];
+    return `
+      <div class="tree-season">
+        <label class="s-head"><input type="checkbox" class="pick-season" data-season="${sn}">
+          <b>Season ${sn}</b> <span class="muted">(${eps.length} eps)</span></label>
+        <div class="tree-eps">
+          ${eps.map((e) => `
+            <label class="tree-ep"><input type="checkbox" class="pick-ep" data-season="${sn}" data-episode="${e.episode}">
+              S${pad(sn)}E${pad(e.episode)}${e.title ? " · " + esc(e.title) : ""}</label>`).join("")}
+        </div>
+      </div>`;
+  }).join("");
+  tree.querySelectorAll(".pick-season").forEach((el) => el.addEventListener("change", (e) => {
+    const sn = +e.target.dataset.season;
+    const on = e.target.checked;
+    (epsBySeason[sn] || []).forEach((ep) => {
+      const key = `s${sn}e${ep.episode}`;
+      if (on) state.picked.add(key); else state.picked.delete(key);
+    });
+    syncTree(seasons, epsBySeason);
+  }));
+  tree.querySelectorAll(".pick-ep").forEach((el) => el.addEventListener("change", (e) => {
+    const key = `s${e.target.dataset.season}e${e.target.dataset.episode}`;
+    if (e.target.checked) state.picked.add(key); else state.picked.delete(key);
+    syncTree(seasons, epsBySeason);
+  }));
+}
+
+function syncTree(seasons, epsBySeason) {
+  const tree = $("#ep-tree");
+  if (!tree) return;
+  tree.querySelectorAll(".pick-ep").forEach((el) => {
+    el.checked = state.picked.has(`s${el.dataset.season}e${el.dataset.episode}`);
+  });
+  tree.querySelectorAll(".pick-season").forEach((el) => {
+    const sn = +el.dataset.season;
+    const eps = epsBySeason[sn] || [];
+    const n = eps.filter((e) => state.picked.has(`s${sn}e${e.episode}`)).length;
+    el.checked = eps.length > 0 && n === eps.length;
+    el.indeterminate = n > 0 && n < eps.length;
+  });
+  const all = $("#pick-all");
+  if (all) {
+    let total = 0, picked = 0;
+    seasons.forEach((sn) => (epsBySeason[sn] || []).forEach((e) => { total++; if (state.picked.has(`s${sn}e${e.episode}`)) picked++; }));
+    all.checked = total > 0 && picked === total;
+    all.indeterminate = picked > 0 && picked < total;
+  }
+  updatePickCount();
+}
+
+function updatePickCount() {
+  const el = $("#pick-count");
+  if (!el) return;
+  const n = state.picked.size;
+  el.textContent = n ? `${n} episode${n === 1 ? "" : "s"} selected` : "";
 }
 
 async function addWanted() {
   const d = state.loaded;
   const btn = $("#add-wanted"); btn.disabled = true;
-  const payload = {
+  const base = {
     tmdb_id: d.id, media_type: d.media_type, title: d.year ? `${d.title} (${d.year})` : d.title,
     quality: state.quality,
   };
-  if (d.media_type === "tv") { payload.season = state.season; if (state.episode) payload.episode = state.episode; }
   try {
-    const w = await api("/api/wanted", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    $("#wmsg").innerHTML = `<div class="msg ok">Queued #${w.id} — ${esc(w.provider)} · ${esc(w.quality || "auto")}${w.season ? ` S${w.season}` : ""}${w.episode ? `E${w.episode}` : ""}</div>`;
+    let res;
+    if (d.media_type === "tv") {
+      if (!state.picked.size) throw new Error("select at least one episode (or use Select all)");
+      const seasons = [];
+      const episodes = [];
+      const bySeason = {};
+      state.picked.forEach((k) => { const m = k.match(/^s(\d+)e(\d+)$/); if (m) (bySeason[m[1]] = bySeason[m[1]] || []).push(+m[2]); });
+      // whole seasons -> seasons list; partial -> per-episode list
+      const allEp = {};
+      (d.episodes || []).forEach((e) => { (allEp[e.season] = allEp[e.season] || []).push(e.episode); });
+      Object.keys(bySeason).map(Number).sort((a, b) => a - b).forEach((sn) => {
+        const pickedEps = bySeason[sn].sort((a, b) => a - b);
+        const allEps = (allEp[sn] || []).sort((a, b) => a - b);
+        if (pickedEps.length === allEps.length && pickedEps.every((v, i) => v === allEps[i])) {
+          seasons.push(sn);
+        } else {
+          pickedEps.forEach((ep) => episodes.push({ season: sn, episode: ep }));
+        }
+      });
+      res = await api("/api/wanted", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...base, seasons, episodes }) });
+    } else {
+      res = await api("/api/wanted", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(base) });
+    }
+    const n = res.count || (Array.isArray(res.created) ? res.created.length : 1);
+    const first = (res.created || [])[0];
+    $("#wmsg").innerHTML = `<div class="msg ok">Queued ${n} item${n === 1 ? "" : "s"} — ${first ? esc(first.provider) : "auto"} · ${esc(state.quality || "auto")}</div>`;
     loadWanted();
   } catch (err) { $("#wmsg").innerHTML = `<div class="msg err">${esc(err.message)}</div>`; }
   finally { btn.disabled = false; }

@@ -143,6 +143,18 @@ def create_wanted(title: str, provider: str, source_url: str,
         return int(cur.lastrowid)
 
 
+def find_wanted(source_url: str, media_type: str = "movie",
+                season: int | None = None, episode: int | None = None) -> Optional[dict]:
+    """Return an existing non-downloaded wanted row matching the same source+episode (dedupe)."""
+    with _cursor() as conn:
+        row = conn.execute(
+            "SELECT * FROM wanted WHERE source_url=? AND media_type=? AND season IS ? AND episode IS ?"
+            " AND status != 'downloaded' ORDER BY id DESC LIMIT 1",
+            (source_url, media_type, season, episode),
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def get_wanted(wanted_id: int) -> Optional[dict]:
     with _cursor() as conn:
         row = conn.execute("SELECT * FROM wanted WHERE id=?", (wanted_id,)).fetchone()
