@@ -199,11 +199,15 @@ def _process(job_id: int):
                 db.update_job(job_id, status="done", progress=100.0,
                               filename=os.path.basename(final), file_size=size)
                 _write_sidecar(final, job)
+                db.record_provider_attempt(job["provider"], ok=True,
+                                           bytes_downloaded=size,
+                                           quality=link.quality or job.get("quality"))
                 return
         except Exception as e:  # noqa: BLE001
             last_err = f"{type(e).__name__}: {e}"
             continue
 
+    db.record_provider_attempt(job["provider"], ok=False)
     db.update_job(job_id, status="error", error=f"all links failed: {last_err or 'unknown'}")
 
 

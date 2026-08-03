@@ -15,10 +15,12 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import json
 
 from . import config
 from . import db
 from . import worker
+from .providers import registry
 
 log = logging.getLogger("reconciler")
 
@@ -45,13 +47,48 @@ def _sweep() -> None:
             log.info("wanted %s downloaded (job %s)", w["id"], job["id"])
         elif job["status"] == "error":
             attempts = (w["attempt_count"] or 0) + 1
-            db.update_wanted(
-                w["id"], status="failed", job_id=None,
-                attempt_count=attempts, last_error=job.get("error"),
-                next_attempt_at=now + config.RETRY_SECONDS,
-            )
-            log.info("wanted %s failed (job %s): %s — retry in %ss",
-                     w["id"], job["id"], job.get("error"), config.RETRY_SECONDS)
+            # provider failover: if this wanted row has more candidate providers,
+            # advance to the next one and retry soon instead of the 4h backoff.
+            providers = _candidates(w)
+            nxt = _next_provider(w, providers)
+            if nxt:
+                # Some candidates (videasy-failover list) don't carry a source_url
+                # yet — resolve it on the fly from tmdb metadata.
+                src = nxt.get("source_url")
+                if not src and nxt.get("id") == "2embed" and w.get("tmdb_id"):
+                    tmdb = registry.metadata_provider()  # type: ignore
+                    loaded = tmdb.load(f"tmdb://{w['tmdb_id']}/{w['media_type']}")
+                    src = loaded.imdb_id if loaded and loaded.imdb_id else w["source_url"]
+                elif not src and nxt.get("id") == "hindmoviez" and w.get("tmdb_id"):
+                    tmdb = registry.metadata_provider()  # type: ignore
+                    loaded = tmdb.load(f"tmdb://{w['tmdb_id']}/{w['media_type']}")
+                    hm = registry.get("hindmoviez")  # type: ignore
+                    best = None
+                    if loaded and hm:
+                        matches = hm.search(loaded.title)
+                        for m in matches:
+                            if m.year and loaded.year and m.year == loaded.year:
+                                best = m
+                                break
+                        if best is None and matches:
+                            best = matches[0]
+                    src = best.url if best else w["source_url"]
+                db.update_wanted(
+                    w["id"], status="wanted", job_id=None,
+                    attempt_count=attempts, last_error=job.get("error"),
+                    provider=nxt["id"], source_url=src or w["source_url"],
+                    next_attempt_at=now + 30,   # quick retry on the next candidate
+                )
+                log.info("wanted %s failed on %s (job %s): %s — trying next provider %s",
+                         w["id"], w["provider"], job["id"], job.get("error"), nxt["id"])
+            else:
+                db.update_wanted(
+                    w["id"], status="failed", job_id=None,
+                    attempt_count=attempts, last_error=job.get("error"),
+                    next_attempt_at=now + config.RETRY_SECONDS,
+                )
+                log.info("wanted %s failed (job %s): %s — retry in %ss",
+                         w["id"], job["id"], job.get("error"), config.RETRY_SECONDS)
         # else: still queued/downloading — leave it
 
     # 2) launch due items
@@ -60,6 +97,7 @@ def _sweep() -> None:
             job_id = db.create_job(
                 title=w["title"],
                 provider=w["provider"],
+                tmdb_id=w.get("tmdb_id"),
                 imdb_id=w["source_url"],      # post URL / imdb id — what resolve() expects
                 media_type=w["media_type"],
                 quality=w.get("quality"),
@@ -78,6 +116,30 @@ def _sweep() -> None:
         )
         worker.enqueue(job_id)
         log.info("wanted %s -> job %s (%s)", w["id"], job_id, w["title"])
+
+
+def _candidates(w: dict) -> list[dict]:
+    """Parse the stored candidate provider list. Each entry: {id, source_url?}."""
+    raw = w.get("providers")
+    if raw:
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+    return [{"id": w["provider"], "source_url": w["source_url"]}]
+
+
+def _next_provider(w: dict, providers: list[dict]) -> dict | None:
+    """Return the first candidate after the currently-active provider."""
+    cur = w.get("provider")
+    started = False
+    for p in providers:
+        if p.get("id") == cur:
+            started = True
+            continue
+        if started:
+            return p
+    return None
 
 
 def _loop() -> None:

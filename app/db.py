@@ -4,6 +4,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+import json
 from contextlib import contextmanager
 from typing import Optional
 
@@ -34,11 +35,24 @@ CREATE TABLE IF NOT EXISTS jobs (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS provider_stats (
+    provider TEXT PRIMARY KEY,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    successes INTEGER NOT NULL DEFAULT 0,
+    failures INTEGER NOT NULL DEFAULT 0,
+    bytes_downloaded INTEGER NOT NULL DEFAULT 0,
+    last_success_at INTEGER,
+    last_failure_at INTEGER,
+    avg_quality TEXT
+);
+
 CREATE TABLE IF NOT EXISTS wanted (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
-    provider TEXT NOT NULL DEFAULT 'hindmoviez',
+    provider TEXT NOT NULL DEFAULT '',
     source_url TEXT NOT NULL,
+    tmdb_id INTEGER,
+    providers TEXT,                       -- JSON array of candidate provider ids (auto-resolve order)
     media_type TEXT NOT NULL DEFAULT 'movie',
     quality TEXT,
     status TEXT NOT NULL DEFAULT 'wanted',      -- wanted | attempting | downloaded | failed
@@ -66,7 +80,7 @@ def init_db() -> None:
     with _connect() as conn:
         conn.executescript(_SCHEMA)
         # migration: wanted season/episode (older DBs lack the columns)
-        for col in ("season INTEGER", "episode INTEGER"):
+        for col in ("season INTEGER", "episode INTEGER", "tmdb_id INTEGER", "providers TEXT"):
             try:
                 conn.execute(f"ALTER TABLE wanted ADD COLUMN {col}")
             except sqlite3.OperationalError:
@@ -132,13 +146,17 @@ def delete_job(job_id: int) -> None:
 
 def create_wanted(title: str, provider: str, source_url: str,
                   media_type: str = "movie", quality: str | None = None,
-                  season: int | None = None, episode: int | None = None) -> int:
+                  season: int | None = None, episode: int | None = None,
+                  tmdb_id: int | None = None,
+                  providers: list[dict] | None = None) -> int:
     with _cursor() as conn:
         cur = conn.execute(
-            "INSERT INTO wanted (title, provider, source_url, media_type, quality,"
+            "INSERT INTO wanted (title, provider, source_url, tmdb_id, providers, media_type, quality,"
             " season, episode, status, next_attempt_at, created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,?, 'wanted', 0, ?, ?)",
-            (title, provider, source_url, media_type, quality, season, episode, _now(), _now()),
+            " VALUES (?,?,?,?,?,?,?,?,?, 'wanted', 0, ?, ?)",
+            (title, provider, source_url, tmdb_id,
+             json.dumps(providers) if providers else None,
+             media_type, quality, season, episode, _now(), _now()),
         )
         return int(cur.lastrowid)
 
@@ -196,3 +214,68 @@ def due_wanted(now: int, limit: int = 2) -> list[dict]:
             (now, limit),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+# ---- provider reliability stats --------------------------------------------
+
+def record_provider_attempt(provider: str, ok: bool, bytes_downloaded: int = 0,
+                            quality: str | None = None) -> None:
+    """Record one download outcome for a provider (for reliability ordering)."""
+    now = int(time.time())
+    with _cursor() as conn:
+        row = conn.execute("SELECT * FROM provider_stats WHERE provider=?",
+                           (provider,)).fetchone()
+        if row:
+            conn.execute(
+                "UPDATE provider_stats SET attempts=attempts+1,"
+                " successes=successes+?, failures=failures+?,"
+                " bytes_downloaded=bytes_downloaded+?,"
+                " last_success_at=CASE WHEN ? THEN ? ELSE last_success_at END,"
+                " last_failure_at=CASE WHEN ? THEN ? ELSE last_failure_at END,"
+                " avg_quality=? WHERE provider=?",
+                (1 if ok else 0, 0 if ok else 1, bytes_downloaded,
+                 ok, now, not ok, now, quality or row["avg_quality"], provider),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO provider_stats (provider, attempts, successes, failures,"
+                " bytes_downloaded, last_success_at, last_failure_at, avg_quality)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (provider, 1, 1 if ok else 0, 0 if ok else 1, bytes_downloaded,
+                 now if ok else None, now if not ok else None, quality),
+            )
+
+
+def provider_stats() -> list[dict]:
+    with _cursor() as conn:
+        rows = conn.execute("SELECT * FROM provider_stats").fetchall()
+        return [dict(r) for r in rows]
+
+
+def reliable_provider_order() -> list[str]:
+    """Provider ids sorted by reliability (best first).
+
+    Score = success rate with a recency bonus and a minimum-attempts floor so a
+    single lucky success doesn't dominate. Providers with no stats are ranked
+    after proven ones but before consistently-failing ones.
+    """
+    import json as _json
+    stats = provider_stats()
+    scored = []
+    for s in stats:
+        attempts = s["attempts"] or 0
+        if attempts == 0:
+            continue
+        rate = (s["successes"] or 0) / attempts
+        # recency: recent success boosts, recent failure hurts (within 7 days)
+        now = int(time.time())
+        recency = 0.0
+        if s["last_success_at"] and now - s["last_success_at"] < 7 * 86400:
+            recency += 0.15
+        if s["last_failure_at"] and now - s["last_failure_at"] < 7 * 86400:
+            recency -= 0.1
+        # min-attempts floor: <3 attempts get slight penalty (not proven yet)
+        floor = -0.1 if attempts < 3 else 0.0
+        scored.append((rate + recency + floor, s["provider"]))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [p for _, p in scored]

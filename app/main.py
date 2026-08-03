@@ -17,7 +17,7 @@ from . import config
 from . import db
 from . import reconciler
 from . import worker
-from .models import DownloadRequest, LinksRequest, LinksResponse, Job, WantedRequest
+from .models import DownloadRequest, LinksRequest, LinksResponse, Job, SearchResult, WantedRequest
 from .providers import registry
 from .providers.hindmoviez import HindmoviezProvider
 from .providers.tmdb import TMDBProvider
@@ -59,6 +59,17 @@ def health():
 @app.get("/api/providers")
 def providers():
     return {"providers": [p.describe() for p in registry.all_providers()]}
+
+
+@app.get("/api/providers/stats")
+def provider_stats_api():
+    """Provider download reliability stats (for auto-resolve ordering)."""
+    stats = db.provider_stats()
+    for s in stats:
+        a = s["attempts"] or 0
+        s["success_rate"] = round((s["successes"] or 0) / a, 3) if a else None
+    order = db.reliable_provider_order()
+    return {"stats": stats, "order": order}
 
 
 # ---- CloudStream-style search / load ---------------------------------------
@@ -191,41 +202,101 @@ def job_delete(job_id: int):
 
 @app.post("/api/wanted")
 def wanted_add(req: WantedRequest):
-    prov = registry.get(req.provider)
-    if not prov or not getattr(prov, "enabled", False):
-        raise HTTPException(400, f"unknown or disabled provider: {req.provider}")
-
-    source_url, provider = req.source_url, req.provider
+    # ---- auto-resolve provider when not specified -----------------------------
+    # Priority: videasy (streaming, broad catalog incl. English TV) ->
+    # hindmoviez (season-pack download site) -> 2embed (imdb fallback).
+    # Auto mode tries each in order and picks the first that resolves a source.
+    source_url = req.source_url
+    provider = req.provider
+    tmdb_id = req.tmdb_id
     title = req.title
+    candidates: list[dict] = []
 
-    # If no source_url, resolve it from tmdb_id (hindmoviez post search -> 2embed imdb fallback)
-    if not source_url and req.tmdb_id:
-        tmdb: TMDBProvider = registry.metadata_provider()  # type: ignore
-        loaded = tmdb.load(f"tmdb://{req.tmdb_id}/{req.media_type}")
-        if not loaded:
-            raise HTTPException(404, "tmdb metadata not found")
-        if not title:
+    if provider and not source_url:
+        # explicit provider with tmdb_id: resolve source for that provider only
+        tmdb = registry.metadata_provider()  # type: ignore
+        loaded = tmdb.load(f"tmdb://{tmdb_id}/{req.media_type}") if tmdb_id else None
+        if loaded and not title:
             title = f"{loaded.title} ({loaded.year})" if loaded.year else loaded.title
-        hm: HindmoviezProvider = registry.get("hindmoviez")  # type: ignore
-        matches = hm.search(loaded.title)
-        best = None
-        for m in matches:
-            if m.year and loaded.year and m.year == loaded.year:
-                best = m
-                break
-        if best is None and matches:
-            best = matches[0]
-        if best:
-            source_url, provider = best.url, "hindmoviez"
-        elif loaded.imdb_id:
-            source_url, provider = loaded.imdb_id, "2embed"
-        if not source_url:
-            raise HTTPException(404, "no source found on hindmoviez or 2embed")
+        if provider == "hindmoviez":
+            hm = registry.get("hindmoviez")  # type: ignore
+            best = _hindmoviez_best(hm, loaded)
+            if best:
+                source_url = best.url
+        elif provider in ("2embed", "videasy"):
+            if loaded and loaded.imdb_id and provider == "2embed":
+                source_url = loaded.imdb_id
+            # videasy resolves from tmdb_id only — no source_url needed
+        if not source_url and provider != "videasy":
+            raise HTTPException(404, f"no source found for provider {provider}")
+        candidates = [{"id": provider, "source_url": source_url}]
 
-    if not source_url:
-        raise HTTPException(400, "source_url or tmdb_id required")
+    elif not provider:
+        # AUTO: try providers in reliability order (most-reliable first), then
+        # fall back to the priority list until the stats table has data.
+        tmdb = registry.metadata_provider()  # type: ignore
+        loaded = tmdb.load(f"tmdb://{tmdb_id}/{req.media_type}") if tmdb_id else None
+        if loaded and not title:
+            title = f"{loaded.title} ({loaded.year})" if loaded.year else loaded.title
+        if not tmdb_id:
+            raise HTTPException(400, "tmdb_id required for auto provider resolution")
+
+        # Build the candidate pool in reliability order, keeping the known-good
+        # priority as a tiebreak for providers with no stats yet.
+        priority = ["videasy", "hindmoviez", "2embed"]
+        reliable = db.reliable_provider_order()
+        ordered: list[str] = []
+        for p in reliable + priority:
+            if p not in ordered and p in priority:
+                ordered.append(p)
+        for p in priority:
+            if p not in ordered:
+                ordered.append(p)
+
+        candidates = []
+        for pid in ordered:
+            prov = registry.get(pid)
+            if not prov or not prov.enabled or prov.kind != "source":
+                continue
+            if pid == "videasy" and tmdb_id:
+                # seed probe confirms availability cheaply
+                try:
+                    seed = prov._fetch_seed("https://api.speedracelight.com", tmdb_id)  # type: ignore[attr-defined]
+                except Exception:
+                    seed = None
+                if seed:
+                    source_url = ""
+                    provider = "videasy"
+                    candidates = [
+                        {"id": "videasy", "source_url": ""},
+                        {"id": "hindmoviez", "source_url": None},
+                        {"id": "2embed", "source_url": None},
+                    ]
+                    break
+            elif pid == "hindmoviez":
+                best = _hindmoviez_best(prov, loaded)
+                if best:
+                    source_url, provider = best.url, "hindmoviez"
+                    candidates = [
+                        {"id": "hindmoviez", "source_url": best.url},
+                        {"id": "videasy", "source_url": ""},
+                        {"id": "2embed", "source_url": None},
+                    ]
+                    break
+            elif pid == "2embed":
+                if loaded and loaded.imdb_id:
+                    source_url, provider = loaded.imdb_id, "2embed"
+                    candidates = [
+                        {"id": "2embed", "source_url": loaded.imdb_id},
+                        {"id": "videasy", "source_url": ""},
+                        {"id": "hindmoviez", "source_url": None},
+                    ]
+                    break
+        if not provider:
+            raise HTTPException(404, "no source found on any provider")
+
     if not title:
-        title = source_url
+        title = source_url or f"tmdb-{tmdb_id or '?'}"
 
     # ---- build the (season, episode) selection ---------------------------------
     pairs: list[tuple[int | None, int | None]] = []
@@ -236,8 +307,8 @@ def wanted_add(req: WantedRequest):
                 pairs.append((e.get("season"), e.get("episode")))
             # whole seasons -> enumerate episodes from TMDB
             if req.seasons:
-                tmdb: TMDBProvider = registry.metadata_provider()  # type: ignore
-                loaded = tmdb.load(f"tmdb://{req.tmdb_id}/{req.media_type}") if req.tmdb_id else None
+                tmdb = registry.metadata_provider()  # type: ignore
+                loaded = tmdb.load(f"tmdb://{tmdb_id}/{req.media_type}") if tmdb_id else None
                 ep_by_season: dict[int, list[int]] = {}
                 if loaded:
                     for ep in loaded.episodes:
@@ -252,7 +323,7 @@ def wanted_add(req: WantedRequest):
                 else:
                     # legacy "whole season" -> enumerate too
                     tmdb = registry.metadata_provider()  # type: ignore
-                    loaded = tmdb.load(f"tmdb://{req.tmdb_id}/{req.media_type}") if req.tmdb_id else None
+                    loaded = tmdb.load(f"tmdb://{tmdb_id}/{req.media_type}") if tmdb_id else None
                     if loaded:
                         for ep in loaded.episodes:
                             if ep.season == req.season:
@@ -270,8 +341,8 @@ def wanted_add(req: WantedRequest):
 
     # ---- provider-aware granularity ------------------------------------------
     # hindmoviez posts are SEASON PACKS: a TV wanted item downloads the pack, so
-    # one row per season (episode=None). Per-episode providers (2embed) get one
-    # row per episode, queued one at a time by the reconciler/worker pool.
+    # one row per season (episode=None). Per-episode providers (2embed/videasy)
+    # get one row per episode, queued one at a time by the reconciler/worker pool.
     if req.media_type == "tv" and provider == "hindmoviez":
         rows: list[tuple[int | None, int | None]] = sorted({(s, None) for s, _ in pairs if s is not None})
         if not rows:
@@ -284,17 +355,33 @@ def wanted_add(req: WantedRequest):
         row_title = title
         if req.media_type == "tv" and sn is not None:
             row_title = f"{title} S{sn:02d}" + (f"E{ep:02d}" if ep is not None else "")
-        existing = db.find_wanted(source_url, req.media_type, sn, ep)
+        existing = db.find_wanted(source_url or f"tmdb://{tmdb_id}", req.media_type, sn, ep)
         if existing:
             created.append(existing)
             continue
-        wid = db.create_wanted(row_title, provider, source_url,
-                               req.media_type, req.quality, sn, ep)
+        wid = db.create_wanted(row_title, provider, source_url or f"tmdb://{tmdb_id}",
+                               req.media_type, req.quality, sn, ep,
+                               tmdb_id=tmdb_id, providers=candidates)
         created.append(db.get_wanted(wid))
 
     # first sweep happens soon after startup; nudge the reconciler for fast kickoff
     reconciler.nudge()
     return {"created": created, "count": len(created)}
+
+
+def _hindmoviez_best(hm, loaded) -> "SearchResult | None":
+    """Year-matched hindmoviez post search hit, or the first match."""
+    if not hm or not loaded:
+        return None
+    matches = hm.search(loaded.title)
+    best = None
+    for m in matches:
+        if m.year and loaded.year and m.year == loaded.year:
+            best = m
+            break
+    if best is None and matches:
+        best = matches[0]
+    return best
 
 
 @app.get("/api/wanted")

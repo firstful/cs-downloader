@@ -79,13 +79,13 @@ class DownloadRequest(BaseModel):
 
 class WantedRequest(BaseModel):
     title: str = ""
-    provider: str = "hindmoviez"
-    source_url: str = ""               # optional — else resolved from tmdb_id
+    provider: str = ""               # "" = auto (server picks best across registry)
+    source_url: str = ""             # optional — else resolved from tmdb_id
     tmdb_id: Optional[int] = None
     media_type: str = "movie"
     quality: Optional[str] = None
-    season: Optional[int] = None       # legacy single-season add
-    episode: Optional[int] = None      # legacy single-episode add
+    season: Optional[int] = None     # legacy single-season add
+    episode: Optional[int] = None    # legacy single-episode add
     seasons: list[int] = Field(default_factory=list)      # whole seasons → enumerate eps
     episodes: list[dict] = Field(default_factory=list)    # [{"season":1,"episode":3}, ...] partial picks
 
