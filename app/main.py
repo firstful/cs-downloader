@@ -223,11 +223,11 @@ def wanted_add(req: WantedRequest):
             best = _hindmoviez_best(hm, loaded)
             if best:
                 source_url = best.url
-        elif provider in ("2embed", "videasy"):
+        elif provider in ("2embed", "videasy", "xpass"):
             if loaded and loaded.imdb_id and provider == "2embed":
                 source_url = loaded.imdb_id
-            # videasy resolves from tmdb_id only — no source_url needed
-        if not source_url and provider != "videasy":
+            # videasy/xpass resolve from tmdb_id only — no source_url needed
+        if not source_url and provider not in ("videasy", "xpass"):
             raise HTTPException(404, f"no source found for provider {provider}")
         candidates = [{"id": provider, "source_url": source_url}]
 
@@ -243,7 +243,7 @@ def wanted_add(req: WantedRequest):
 
         # Build the candidate pool in reliability order, keeping the known-good
         # priority as a tiebreak for providers with no stats yet.
-        priority = ["videasy", "hindmoviez", "2embed"]
+        priority = ["videasy", "xpass", "hindmoviez", "2embed"]
         reliable = db.reliable_provider_order()
         ordered: list[str] = []
         for p in reliable + priority:
@@ -269,10 +269,38 @@ def wanted_add(req: WantedRequest):
                     provider = "videasy"
                     candidates = [
                         {"id": "videasy", "source_url": ""},
+                        {"id": "xpass", "source_url": None},
                         {"id": "hindmoviez", "source_url": None},
                         {"id": "2embed", "source_url": None},
                     ]
                     break
+            elif pid == "xpass":
+                # Probe the player page cheaply (needs a concrete episode for tv).
+                xp = registry.get("xpass")  # type: ignore
+                probe_s, probe_e = None, None
+                if req.media_type == "tv":
+                    if req.episode is not None:
+                        probe_s, probe_e = req.season, req.episode
+                    elif req.episodes:
+                        probe_s = req.episodes[0].get("season")
+                        probe_e = req.episodes[0].get("episode")
+                if xp and tmdb_id and (req.media_type == "movie" or (probe_s is not None and probe_e is not None)):
+                    try:
+                        links = xp.resolve(type("_R", (), {
+                            "media_type": req.media_type, "tmdb_id": tmdb_id,
+                            "season": probe_s, "episode": probe_e,
+                        })())
+                        if links:
+                            provider = "xpass"
+                            candidates = [
+                                {"id": "xpass", "source_url": None},
+                                {"id": "videasy", "source_url": ""},
+                                {"id": "hindmoviez", "source_url": None},
+                                {"id": "2embed", "source_url": None},
+                            ]
+                            break
+                    except Exception:
+                        pass
             elif pid == "hindmoviez":
                 best = _hindmoviez_best(prov, loaded)
                 if best:
@@ -280,6 +308,7 @@ def wanted_add(req: WantedRequest):
                     candidates = [
                         {"id": "hindmoviez", "source_url": best.url},
                         {"id": "videasy", "source_url": ""},
+                        {"id": "xpass", "source_url": None},
                         {"id": "2embed", "source_url": None},
                     ]
                     break
@@ -289,6 +318,7 @@ def wanted_add(req: WantedRequest):
                     candidates = [
                         {"id": "2embed", "source_url": loaded.imdb_id},
                         {"id": "videasy", "source_url": ""},
+                        {"id": "xpass", "source_url": None},
                         {"id": "hindmoviez", "source_url": None},
                     ]
                     break
