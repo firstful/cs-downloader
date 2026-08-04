@@ -136,6 +136,19 @@ def list_jobs(limit: int = 50) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def list_jobs_by_status(statuses: tuple[str, ...]) -> list[dict]:
+    """All jobs in the given statuses, oldest first (FIFO recovery order)."""
+    if not statuses:
+        return []
+    marks = ",".join("?" for _ in statuses)
+    with _cursor() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM jobs WHERE status IN ({marks}) ORDER BY id ASC",
+            statuses,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def update_job(job_id: int, **fields) -> None:
     if not fields:
         return

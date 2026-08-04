@@ -89,7 +89,15 @@ def _sweep() -> None:
                 )
                 log.info("wanted %s failed (job %s): %s — retry in %ss",
                          w["id"], job["id"], job.get("error"), config.RETRY_SECONDS)
-        # else: still queued/downloading — leave it
+        # else: job status is queued/resolving/downloading — is the pool
+        # actually processing it? After a pod restart / node loss the
+        # in-memory queue is gone and these rows become orphans: the wanted
+        # row would hang in attempting forever. Re-enqueue (idempotent) so
+        # the job is picked up again.
+        elif not worker.is_live(job["id"]):
+            worker.enqueue(job["id"])
+            log.info("wanted %s: orphaned job %s re-enqueued (status %s)",
+                     w["id"], job["id"], job["status"])
 
     # 2) launch due items
     for w in db.due_wanted(now, config.MAX_RECONCILE_PER_SWEEP):

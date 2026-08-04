@@ -25,6 +25,8 @@ _jobs: queue.Queue = queue.Queue()
 _stop = threading.Event()
 _threads: list[threading.Thread] = []
 _job_lock = threading.Lock()
+_live: set[int] = set()          # job_ids in the pool queue or being processed
+_live_lock = threading.Lock()
 
 # ---- rate limiting (sliding window) -----------------------------------------
 # Records (timestamp, bytes) of completed fragment chunks; the worker waits
@@ -235,6 +237,8 @@ def _worker_loop():
             db.update_job(job_id, status="error", error=f"{type(e).__name__}: {e}")
         finally:
             _jobs.task_done()
+            with _live_lock:
+                _live.discard(job_id)
 
 
 def _process(job_id: int):
@@ -321,8 +325,19 @@ def _process(job_id: int):
         _rebalance_ratelimits()   # grow survivors' shares
 
 
-def enqueue(job_id: int):
+def enqueue(job_id: int) -> None:
+    """Add a job to the pool queue (idempotent: no-op if already live)."""
+    with _live_lock:
+        if job_id in _live:
+            return
+        _live.add(job_id)
     _jobs.put(job_id)
+
+
+def is_live(job_id: int) -> bool:
+    """True if the job is in the pool queue or currently being processed."""
+    with _live_lock:
+        return job_id in _live
 
 
 def start(workers: int | None = None):
@@ -332,6 +347,12 @@ def start(workers: int | None = None):
         t = threading.Thread(target=_worker_loop, daemon=True, name="dl-worker")
         t.start()
         _threads.append(t)
+    # Recover jobs that were queued/resolving/downloading when this process
+    # started: the in-memory pool died with the old process (pod restart /
+    # node loss). Scan oldest-first so the pool resumes in FIFO order. Jobs
+    # already live are no-ops via enqueue()'s dedupe.
+    for j in db.list_jobs_by_status(("queued", "resolving", "downloading")):
+        enqueue(j["id"])
 
 
 def stop():
