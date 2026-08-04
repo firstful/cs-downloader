@@ -20,11 +20,14 @@ USER_AGENT = os.environ.get(
 REQUEST_TIMEOUT = int(os.environ.get("SP_HTTP_TIMEOUT", "25"))
 
 # Worker
-MAX_CONCURRENT_DOWNLOADS = int(os.environ.get("SP_MAX_CONCURRENT", "2"))
+MAX_CONCURRENT_DOWNLOADS = int(os.environ.get("SP_MAX_CONCURRENT", "4"))
 MAX_RETRIES = int(os.environ.get("SP_MAX_RETRIES", "2"))
 
-# Rate limiting: max bytes per rolling window (default 10GiB / 10 min)
-RATE_LIMIT_BYTES = int(os.environ.get("SP_RATE_LIMIT_BYTES", str(10 * 1024 ** 3)))
+# Rate limiting: max bytes per rolling window (default 5GiB / 10 min)
+# Reed 2026-08-04: halved from 10GiB to be conservative. The window is
+# enforced by a shared start-gate + per-job fair-share throttle, so a
+# parallel worker pool can fill the pipe without exceeding it.
+RATE_LIMIT_BYTES = int(os.environ.get("SP_RATE_LIMIT_BYTES", str(5 * 1024 ** 3)))
 RATE_WINDOW_SECONDS = int(os.environ.get("SP_RATE_WINDOW_SECONDS", "600"))
 
 # Reconciler (wanted-library): sweep cadence + retry backoff for failed attempts

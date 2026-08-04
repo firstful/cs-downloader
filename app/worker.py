@@ -32,6 +32,8 @@ _job_lock = threading.Lock()
 _ratelock = threading.Lock()
 _rate_buckets: list[tuple[float, int]] = []   # [(ts, bytes), ...]
 _last_bytes: dict[int, int] = {}               # job_id -> last hook downloaded_bytes
+_active_downloads = 0                          # jobs currently pulling bytes (fair-share divisor)
+_active_ydls: dict[int, object] = {}           # job_id -> live yt_dlp.YoutubeDL (rebalance targets)
 
 
 def _rate_used() -> int:
@@ -65,6 +67,38 @@ def _rate_wait() -> None:
 def _rate_reset() -> None:
     with _ratelock:
         _rate_buckets.clear()
+
+
+def _fair_share_locked() -> int | None:
+    """Fair per-job byte/s share of the window (caller must hold _ratelock)."""
+    active = _active_downloads
+    if active <= 0:
+        return None
+    per_worker = config.RATE_LIMIT_BYTES // (config.RATE_WINDOW_SECONDS * active)
+    return per_worker if per_worker > 0 else None
+
+
+def _fair_ratelimit() -> int | None:
+    with _ratelock:
+        return _fair_share_locked()
+
+
+def _rebalance_ratelimits() -> None:
+    """Push the current fair share into every live yt-dlp downloader.
+
+    yt-dlp re-reads ydl.params['ratelimit'] per chunk (verified 2026-08-04),
+    so updating the live handles re-slices the window whenever jobs join or
+    leave the pool: a lone job gets the whole pipe, and N jobs together can
+    never exceed RATE_LIMIT_BYTES per window (the start-gate is the backstop).
+    """
+    with _ratelock:
+        share = _fair_share_locked()
+        targets = list(_active_ydls.items())
+    for _jid, ydl in targets:
+        try:
+            ydl.params["ratelimit"] = share
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _safe_name(title: str) -> str:
@@ -131,7 +165,8 @@ def _remux_mp4(path: str) -> str:
 
 
 def _run_ytdlp(job_id: int, url: str, out_dir: str, out_tmpl: str,
-               referer: str | None = None, headers: dict | None = None) -> str:
+               referer: str | None = None, headers: dict | None = None,
+               ratelimit: int | None = None) -> str:
     """Download url to out_dir. Returns final file path."""
     os.makedirs(out_dir, exist_ok=True)
     opts = {
@@ -143,6 +178,7 @@ def _run_ytdlp(job_id: int, url: str, out_dir: str, out_tmpl: str,
         "fragment_retries": config.MAX_RETRIES,
         "concurrent_fragment_downloads": 4,
         "remux_video": "mp4",
+        "ratelimit": ratelimit,          # None = no per-job cap (yt-dlp default)
         "progress_hooks": [lambda d: _progress_hook(job_id, d)],
         "http_headers": {
             "User-Agent": config.USER_AGENT,
@@ -155,16 +191,24 @@ def _run_ytdlp(job_id: int, url: str, out_dir: str, out_tmpl: str,
 
     if _HAS_API:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            # info may be a playlist dict; take requested entry path
-            path = ""
-            if info:
-                req = info.get("requested_downloads") or []
-                if req:
-                    path = req[0].get("filepath") or ""
-                if not path:
-                    path = ydl.prepare_filename(info)
-            return path
+            with _ratelock:
+                _active_ydls[job_id] = ydl
+            _rebalance_ratelimits()
+            try:
+                info = ydl.extract_info(url, download=True)
+                # info may be a playlist dict; take requested entry path
+                path = ""
+                if info:
+                    req = info.get("requested_downloads") or []
+                    if req:
+                        path = req[0].get("filepath") or ""
+                    if not path:
+                        path = ydl.prepare_filename(info)
+                return path
+            finally:
+                with _ratelock:
+                    _active_ydls.pop(job_id, None)
+                _rebalance_ratelimits()
     else:
         # fallback: shell out
         import subprocess
@@ -217,8 +261,10 @@ def _process(job_id: int):
     )
     try:
         # Wait for rate-limit headroom before spending API calls / bandwidth.
-        # (A long resolve blocks this worker, which is exactly what we want: the
-        # serial queue paces itself to the 10GiB/10min window.)
+        # Workers share one sliding window: each waits at this gate while the
+        # window is full, and each download also self-limits to a fair share
+        # of the window (_fair_ratelimit), so a parallel pool holds the
+        # aggregate at the cap instead of bursting past it.
         _rate_wait()
         links = prov.resolve(req)
     except Exception as e:
@@ -235,34 +281,44 @@ def _process(job_id: int):
     ext_hint = ".%(ext)s"
     out_tmpl = f"{_safe_name(title)}{ext_hint}"
 
-    last_err = None
-    for link in links:
-        try:
-            path = _run_ytdlp(
-                job_id, link.url, out_dir, out_tmpl,
-                referer=link.referer or link.headers.get("Referer"),
-                headers=link.headers,
-            )
-            if path and os.path.exists(path) and os.path.getsize(path) > 0:
-                path = _remux_mp4(path)
-                size = os.path.getsize(path)
-                # move into flat downloads dir with a stable name
-                final = os.path.join(config.DOWNLOAD_DIR, f"{job_id}_{os.path.basename(path)}")
-                os.replace(path, final)
-                db.update_job(job_id, status="done", progress=100.0,
-                              filename=os.path.basename(final), file_size=size)
-                _write_sidecar(final, job)
-                db.record_provider_attempt(job["provider"], ok=True,
-                                           bytes_downloaded=size,
-                                           quality=link.quality or job.get("quality"))
-                _last_bytes.pop(job_id, None)
-                return
-        except Exception as e:  # noqa: BLE001
-            last_err = f"{type(e).__name__}: {e}"
-            continue
+    global _active_downloads
+    with _ratelock:
+        _active_downloads += 1
+    _rebalance_ratelimits()   # shrink survivors' shares for the new arrival
+    try:
+        last_err = None
+        for link in links:
+            try:
+                path = _run_ytdlp(
+                    job_id, link.url, out_dir, out_tmpl,
+                    referer=link.referer or link.headers.get("Referer"),
+                    headers=link.headers,
+                    ratelimit=_fair_ratelimit(),
+                )
+                if path and os.path.exists(path) and os.path.getsize(path) > 0:
+                    path = _remux_mp4(path)
+                    size = os.path.getsize(path)
+                    # move into flat downloads dir with a stable name
+                    final = os.path.join(config.DOWNLOAD_DIR, f"{job_id}_{os.path.basename(path)}")
+                    os.replace(path, final)
+                    db.update_job(job_id, status="done", progress=100.0,
+                                  filename=os.path.basename(final), file_size=size)
+                    _write_sidecar(final, job)
+                    db.record_provider_attempt(job["provider"], ok=True,
+                                               bytes_downloaded=size,
+                                               quality=link.quality or job.get("quality"))
+                    _last_bytes.pop(job_id, None)
+                    return
+            except Exception as e:  # noqa: BLE001
+                last_err = f"{type(e).__name__}: {e}"
+                continue
 
-    db.record_provider_attempt(job["provider"], ok=False)
-    db.update_job(job_id, status="error", error=f"all links failed: {last_err or 'unknown'}")
+        db.record_provider_attempt(job["provider"], ok=False)
+        db.update_job(job_id, status="error", error=f"all links failed: {last_err or 'unknown'}")
+    finally:
+        with _ratelock:
+            _active_downloads -= 1
+        _rebalance_ratelimits()   # grow survivors' shares
 
 
 def enqueue(job_id: int):
