@@ -30,6 +30,26 @@ logging.basicConfig(level=logging.INFO,
 
 app = FastAPI(title="StreamPlay Service", version="1.0.0")
 
+# Known children's shows: if the wanted title matches, force kid_friendly=True
+# even when the caller (web UI checkbox default-off) didn't set it. Keeps kids
+# downloads routed to the Kids library. Substring match on lowercased title.
+KIDS_TITLES = (
+    "peppa pig", "paw patrol", "bluey", "spongebob", "daniel tiger",
+    "arthur", "wild kratts", "dora the explorer", "sesame street",
+    "cocomelon", "mickey mouse", "pj masks", "octonauts",
+    "blaze and the monster machines", "doc mcstuffins", "bubble guppies",
+    "curious george", "thomas & friends", "my little pony", "teletubbies",
+    "blue's clues", "super wings", "pocoyo", "masha and the bear",
+    "winnie the pooh", "little einsteins", "handy manny", "mickey mouse clubhouse",
+    "peppa", "strawberry shortcake", "care bears", "the wiggles", "barney",
+    "pinkfong", "bebefinn", "morphle", "tayo",
+)
+
+
+def is_kids_title(title: str) -> bool:
+    t = (title or "").lower()
+    return any(k in t for k in KIDS_TITLES)
+
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
@@ -387,6 +407,7 @@ def wanted_add(req: WantedRequest):
         rows = pairs
 
     created = []
+    kid_flag = req.kid_friendly or is_kids_title(title)
     for sn, ep in rows:
         row_title = title
         if req.media_type == "tv" and sn is not None:
@@ -398,7 +419,7 @@ def wanted_add(req: WantedRequest):
         wid = db.create_wanted(row_title, provider, source_url or f"tmdb://{tmdb_id}",
                                req.media_type, req.quality, sn, ep,
                                tmdb_id=tmdb_id, providers=candidates,
-                               kid_friendly=req.kid_friendly,
+                               kid_friendly=kid_flag,
                                priority=req.priority)
         created.append(db.get_wanted(wid))
 
