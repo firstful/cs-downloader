@@ -21,9 +21,12 @@ try:
 except Exception:
     _HAS_API = False
 
-_jobs: queue.Queue = queue.Queue()
+_jobs: queue.PriorityQueue = queue.PriorityQueue()   # (-priority, job_id) — highest priority pops first
 _stop = threading.Event()
 _threads: list[threading.Thread] = []
+_workers_lock = threading.Lock()
+_retire = 0                        # workers asked to stop (adaptive shrink)
+_adaptive: threading.Thread | None = None
 _job_lock = threading.Lock()
 _live: set[int] = set()          # job_ids in the pool queue or being processed
 _live_lock = threading.Lock()
@@ -226,9 +229,15 @@ def _run_ytdlp(job_id: int, url: str, out_dir: str, out_tmpl: str,
 
 
 def _worker_loop():
+    global _retire
     while not _stop.is_set():
+        # retire request (adaptive shrink): exit at the next job boundary
+        with _workers_lock:
+            if _retire > 0:
+                _retire -= 1
+                return
         try:
-            job_id = _jobs.get(timeout=2)
+            _negprio, job_id = _jobs.get(timeout=2)
         except queue.Empty:
             continue
         try:
@@ -331,7 +340,9 @@ def enqueue(job_id: int) -> None:
         if job_id in _live:
             return
         _live.add(job_id)
-    _jobs.put(job_id)
+    job = db.get_job(job_id)
+    prio = int(job.get("priority") or 0) if job else 0
+    _jobs.put((-prio, job_id))
 
 
 def is_live(job_id: int) -> bool:
@@ -340,22 +351,111 @@ def is_live(job_id: int) -> bool:
         return job_id in _live
 
 
+# ---- adaptive concurrency ---------------------------------------------------
+
+def _effective_rate() -> float:
+    """Bytes/sec over the last ADAPTIVE_SAMPLE_SECONDS (0 if idle)."""
+    cutoff = time.time() - config.ADAPTIVE_SAMPLE_SECONDS
+    with _ratelock:
+        total = sum(b for ts, b in _rate_buckets if ts >= cutoff)
+    return total / max(config.ADAPTIVE_SAMPLE_SECONDS, 1)
+
+
+def _queued_backlog() -> int:
+    """Queued jobs in the DB that are not already live in the pool."""
+    with _live_lock:
+        live = set(_live)
+    return sum(1 for r in db.list_jobs_by_status(("queued",)) if r["id"] not in live)
+
+
+def _worker_count() -> int:
+    with _workers_lock:
+        return len([t for t in _threads if t.is_alive()])
+
+
+def _set_workers(target: int) -> None:
+    """Grow (spawn) or shrink (retire at job boundary) the worker pool."""
+    global _threads, _retire
+    with _workers_lock:
+        current = len([t for t in _threads if t.is_alive()])
+        if target > current:
+            for _ in range(target - current):
+                t = threading.Thread(target=_worker_loop, daemon=True, name="dl-worker")
+                t.start()
+                _threads.append(t)
+            log.info("adaptive: +%d worker(s) -> %d", target - current, target)
+        elif target < current:
+            # absolute count, not += : if a previous shed cycle already asked
+            # workers to retire, don't stack more requests on top of the still-
+            # running threads (would over-retire below the target).
+            _retire = max(_retire, current - target)
+            log.info("adaptive: retiring %d worker(s) -> ~%d", current - target, target)
+
+
+def _adaptive_loop() -> None:
+    """Slowly grow the pool while the pipe is underused; shed when saturated.
+
+    Effective rate is measured over a short window and compared to the cap
+    (RATE_LIMIT_BYTES / RATE_WINDOW_SECONDS). Below ADAPTIVE_LOW utilization we
+    add one worker per two consecutive samples (hysteresis avoids flapping on
+    CDN hiccups). Above ADAPTIVE_HIGH, or when the queue drains, we retire one
+    worker per sample back toward MIN. Workers retire at job boundaries so no
+    in-flight download is interrupted.
+    """
+    low_streak = 0
+    while not _stop.is_set():
+        _stop.wait(config.ADAPTIVE_INTERVAL)
+        if _stop.is_set():
+            break
+        try:
+            cap_rate = config.RATE_LIMIT_BYTES / max(config.RATE_WINDOW_SECONDS, 1)
+            eff = _effective_rate()
+            util = eff / cap_rate if cap_rate else 1.0
+            backlog = _queued_backlog()
+            cur = _worker_count()
+            if util < config.ADAPTIVE_LOW and backlog > 0 and cur < config.MAX_CONCURRENT_DOWNLOADS:
+                low_streak += 1
+                if low_streak >= 2:
+                    _set_workers(cur + 1)
+                    low_streak = 0
+                    log.info("adaptive: rate %.0f%% of cap (%.1f MiB/s), +1 worker -> %d",
+                             util * 100, eff / 1048576, cur + 1)
+            else:
+                low_streak = 0
+                if (util > config.ADAPTIVE_HIGH or backlog == 0) and cur > config.MIN_CONCURRENT_DOWNLOADS:
+                    _set_workers(cur - 1)
+                    log.info("adaptive: rate %.0f%% of cap, backlog %d, -1 worker -> %d",
+                             util * 100, backlog, cur - 1)
+        except Exception:  # noqa: BLE001
+            log.exception("adaptive controller error")
+
+
 def start(workers: int | None = None):
-    global _threads
-    n = workers or config.MAX_CONCURRENT_DOWNLOADS
+    """Boot the pool at MIN workers; the adaptive controller grows it as needed.
+
+    Explicit `workers` overrides the floor (used by tests / operators). The
+    controller then ranges between that floor and MAX.
+    """
+    global _threads, _adaptive
+    n = workers or config.MIN_CONCURRENT_DOWNLOADS
     for _ in range(n):
         t = threading.Thread(target=_worker_loop, daemon=True, name="dl-worker")
         t.start()
         _threads.append(t)
     # Recover jobs that were queued/resolving/downloading when this process
     # started: the in-memory pool died with the old process (pod restart /
-    # node loss). Scan oldest-first so the pool resumes in FIFO order. Jobs
-    # already live are no-ops via enqueue()'s dedupe.
+    # node loss). Scan priority-first so the pool resumes in the right order.
+    # Jobs already live are no-ops via enqueue()'s dedupe.
     for j in db.list_jobs_by_status(("queued", "resolving", "downloading")):
         enqueue(j["id"])
+    if config.ADAPTIVE_INTERVAL > 0 and not _adaptive:
+        _adaptive = threading.Thread(target=_adaptive_loop, daemon=True, name="adaptive")
+        _adaptive.start()
 
 
 def stop():
     _stop.set()
     for t in _threads:
         t.join(timeout=5)
+    if _adaptive:
+        _adaptive.join(timeout=5)

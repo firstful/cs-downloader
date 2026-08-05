@@ -392,7 +392,8 @@ def wanted_add(req: WantedRequest):
         wid = db.create_wanted(row_title, provider, source_url or f"tmdb://{tmdb_id}",
                                req.media_type, req.quality, sn, ep,
                                tmdb_id=tmdb_id, providers=candidates,
-                               kid_friendly=req.kid_friendly)
+                               kid_friendly=req.kid_friendly,
+                               priority=req.priority)
         created.append(db.get_wanted(wid))
 
     # first sweep happens soon after startup; nudge the reconciler for fast kickoff

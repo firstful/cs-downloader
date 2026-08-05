@@ -21,7 +21,18 @@ REQUEST_TIMEOUT = int(os.environ.get("SP_HTTP_TIMEOUT", "25"))
 
 # Worker
 MAX_CONCURRENT_DOWNLOADS = int(os.environ.get("SP_MAX_CONCURRENT", "4"))
+MIN_CONCURRENT_DOWNLOADS = int(os.environ.get("SP_MIN_CONCURRENT", "1"))
 MAX_RETRIES = int(os.environ.get("SP_MAX_RETRIES", "2"))
+
+# Adaptive concurrency: the controller compares the effective download rate
+# against the rate-cap. Below ADAPTIVE_LOW utilization it slowly adds workers
+# (up to MAX); above ADAPTIVE_HIGH (or when the queue drains) it sheds back
+# toward MIN. ADAPTIVE_SAMPLE_SECONDS is the short window used to measure the
+# current rate (the cap window itself is 600s — too slow to react).
+ADAPTIVE_INTERVAL = int(os.environ.get("SP_ADAPTIVE_INTERVAL", "60"))        # controller cadence
+ADAPTIVE_SAMPLE_SECONDS = int(os.environ.get("SP_ADAPTIVE_SAMPLE_SECONDS", "30"))
+ADAPTIVE_LOW = float(os.environ.get("SP_ADAPTIVE_LOW", "0.5"))               # <50% of cap → grow
+ADAPTIVE_HIGH = float(os.environ.get("SP_ADAPTIVE_HIGH", "0.85"))            # >85% of cap → shrink
 
 # Rate limiting: max bytes per rolling window (default 5GiB / 10 min)
 # Reed 2026-08-04: halved from 10GiB to be conservative. The window is

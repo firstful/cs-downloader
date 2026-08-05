@@ -89,6 +89,7 @@ class WantedRequest(BaseModel):
     seasons: list[int] = Field(default_factory=list)      # whole seasons → enumerate eps
     episodes: list[dict] = Field(default_factory=list)    # [{"season":1,"episode":3}, ...] partial picks
     kid_friendly: bool = False                            # route to the Kids library
+    priority: int = 0                 # higher = earlier in the queue (declarative ordering)
 
 class Job(BaseModel):
     id: int

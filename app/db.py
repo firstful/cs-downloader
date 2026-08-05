@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     episode INTEGER,
     quality TEXT,
     kid_friendly INTEGER NOT NULL DEFAULT 0,
+    priority INTEGER NOT NULL DEFAULT 0,
     progress REAL NOT NULL DEFAULT 0,
     bytes_downloaded INTEGER NOT NULL DEFAULT 0,
     total_bytes INTEGER,
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS wanted (
     job_id INTEGER,
     downloaded_job_id INTEGER,
     kid_friendly INTEGER NOT NULL DEFAULT 0,     -- route to the Kids library
+    priority INTEGER NOT NULL DEFAULT 0,          -- higher = earlier in the queue
     attempt_count INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
     last_attempt_at INTEGER,
@@ -82,12 +84,12 @@ def init_db() -> None:
     with _connect() as conn:
         conn.executescript(_SCHEMA)
         # migration: wanted season/episode (older DBs lack the columns)
-        for col in ("season INTEGER", "episode INTEGER", "tmdb_id INTEGER", "providers TEXT", "kid_friendly INTEGER NOT NULL DEFAULT 0"):
+        for col in ("season INTEGER", "episode INTEGER", "tmdb_id INTEGER", "providers TEXT", "kid_friendly INTEGER NOT NULL DEFAULT 0", "priority INTEGER NOT NULL DEFAULT 0"):
             try:
                 conn.execute(f"ALTER TABLE wanted ADD COLUMN {col}")
             except sqlite3.OperationalError:
                 pass  # already present
-        for col in ("kid_friendly INTEGER NOT NULL DEFAULT 0",):
+        for col in ("kid_friendly INTEGER NOT NULL DEFAULT 0", "priority INTEGER NOT NULL DEFAULT 0"):
             try:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {col}")
             except sqlite3.OperationalError:
@@ -111,13 +113,13 @@ def _now() -> str:
 
 def create_job(title: str, provider: str, tmdb_id=None, imdb_id=None,
                media_type="movie", season=None, episode=None, quality=None,
-               kid_friendly: bool = False) -> int:
+               kid_friendly: bool = False, priority: int = 0) -> int:
     with _cursor() as conn:
         cur = conn.execute(
-            "INSERT INTO jobs (title, provider, tmdb_id, imdb_id, media_type, season, episode, quality, kid_friendly, created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO jobs (title, provider, tmdb_id, imdb_id, media_type, season, episode, quality, kid_friendly, priority, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (title, provider, tmdb_id, imdb_id, media_type, season, episode, quality,
-             1 if kid_friendly else 0, _now(), _now()),
+             1 if kid_friendly else 0, priority, _now(), _now()),
         )
         return int(cur.lastrowid)
 
@@ -137,13 +139,13 @@ def list_jobs(limit: int = 50) -> list[dict]:
 
 
 def list_jobs_by_status(statuses: tuple[str, ...]) -> list[dict]:
-    """All jobs in the given statuses, oldest first (FIFO recovery order)."""
+    """All jobs in the given statuses, priority first then oldest (recovery order)."""
     if not statuses:
         return []
-    marks = ",".join("?" for _ in statuses)
+    marks = ", ".join("?" for _ in statuses)
     with _cursor() as conn:
         rows = conn.execute(
-            f"SELECT * FROM jobs WHERE status IN ({marks}) ORDER BY id ASC",
+            f"SELECT * FROM jobs WHERE status IN ({marks}) ORDER BY priority DESC, id ASC",
             statuses,
         ).fetchall()
         return [dict(r) for r in rows]
@@ -171,16 +173,16 @@ def create_wanted(title: str, provider: str, source_url: str,
                   season: int | None = None, episode: int | None = None,
                   tmdb_id: int | None = None,
                   providers: list[dict] | None = None,
-                  kid_friendly: bool = False) -> int:
+                  kid_friendly: bool = False, priority: int = 0) -> int:
     with _cursor() as conn:
         cur = conn.execute(
             "INSERT INTO wanted (title, provider, source_url, tmdb_id, providers, media_type, quality,"
-            " season, episode, kid_friendly, status, next_attempt_at, created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?, 'wanted', 0, ?, ?)",
+            " season, episode, kid_friendly, priority, status, next_attempt_at, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?, 'wanted', 0, ?, ?)",
             (title, provider, source_url, tmdb_id,
              json.dumps(providers) if providers else None,
              media_type, quality, season, episode,
-             1 if kid_friendly else 0, _now(), _now()),
+             1 if kid_friendly else 0, priority, _now(), _now()),
         )
         return int(cur.lastrowid)
 

@@ -112,6 +112,7 @@ def _sweep() -> None:
                 season=w.get("season"),
                 episode=w.get("episode"),
                 kid_friendly=bool(w.get("kid_friendly")),
+                priority=int(w.get("priority") or 0),
             )
         except Exception as e:  # noqa: BLE001
             log.exception("wanted %s job create failed", w["id"])
