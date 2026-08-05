@@ -42,10 +42,10 @@ decrypt service with a documented API surface and per-site samples.
 
 ### P0 — low effort, sample exists, fills gaps now
 
-1. **peachify** — `samples/peachify.py`
+1. **peachify** — `samples/peachify.py` — **IMPLEMENTED 2026-08-05 (a0547c0), status: experimental**
    - Servers: `https://usa.eat-peach.sbs/{air,holly,multi}` + `https://uwu.eat-peach.sbs/{moviebox,net}`
    - Movie `/{path}/movie/{tmdb_id}` · TV `/{path}/tv/{tmdb_id}/{s}/{e}` → `GET` → `["data"]` → `POST /api/dec-peachify {text}`
-   - Same shape as videasy — ~30 min port.
+   - Provider file `app/providers/peachify.py` ships the full verified chain. **Blocker: backend returns EMPTY sources** for all 18 titles probed (incl. exact sample params) — decrypt chain verified live (200, schema-correct echo) but `sources=[]` always; moviebox dead (522), ice/net "Provider not Found". Flip status to `ok` + deploy only after a real E2E download succeeds. Re-probe: `curl -sk -4 -H "Origin: https://peachify.top" "https://usa.eat-peach.sbs/holly/movie/157336"` → POST `{"text": <data>}` to `https://enc-dec.app/api/dec-peachify` → expect `sources` non-empty.
 2. **vidfast** — `samples/vidfast.py`
    - `https://vidfast.vc/tv/{tmdb}/{s}/{e}/` → regex `"(?:en|token)":"(.*?)"` → `GET /api/enc-vidfast?text=` → `{servers, stream, token}` → POST servers with `X-CSRF-Token: token` → `POST /api/dec-vidfast` (twice: servers, then stream).
    - Multi-step w/ CSRF token — ~1 hr port.
