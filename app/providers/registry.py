@@ -9,6 +9,7 @@ from __future__ import annotations
 from .base import Provider
 from .embed2 import TwoEmbedProvider
 from .hindmoviez import HindmoviezProvider
+from .peachify import PeachifyProvider
 from .rivestream import RiveStreamProvider
 from .tmdb import TMDBProvider
 from .videasy import VideasyProvider
@@ -43,7 +44,7 @@ def init_registry() -> None:
     _register(XpassProvider())
     _register(RiveStreamProvider())
     # Experimental slots (endpoints from StreamPlay.cs3 v658, decompiled):
-    _register(_Experimental("peachify", "Peachify", "servers https://usa.eat-peach.sbs/{holly,multi,ice,air,net} + uwu.peachify.top/moviebox"))
+    _register(PeachifyProvider())  # chain verified live; backend empty sources 2026-08-05
     _register(_Experimental("vidfast", "VidFast", "https://vidfast.vc/api/auth/challenge|session|providers + /links?api_key=... (routes drifted)"))
     _register(_Experimental("vaplayer", "VaPlayer", "https://streamdata.vaplayer.ru — needs route discovery"))
 
