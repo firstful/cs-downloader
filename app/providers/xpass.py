@@ -4,14 +4,31 @@ The "uncrackable" xpass video API turned out to be plain page + JSON:
   1. GET https://play.xpass.top/e/{movie|tv}/{tmdbId}[/{s}/{e}]
      -> HTML with inline  var backups=[{"id","name","url": "/vip/<token>/1/playlist.json",...},...]
         and          var suburl="https://sub.1x2.space/api/{movie|tv}/{tmdb}[/{s}/{e}]";
+     (cleaner equivalent: GET https://play.xpass.top/data/{movie|tv}/{tmdb}[/{s}/{e}]?autostart=false
+      returns the same backups array as JSON)
   2. GET https://play.xpass.top{backup.url}            -> {"playlist":[{"sources":[
         {"file":"https://vip.1x2.space/playlist/<token>/master.m3u8","type":"hls","label":...}]}]}
-  3. Sources are plain HLS (vip.1x2.space / ps1.1x2.space/enproxy / svz.greenhavenstore.store).
+  3. Sources are plain HLS/MP4; the player cycles backups until one plays, so the
+     provider returns EVERY playable source across ALL backups (worker tries each).
      Dead backends return {"file":"/video/error"} — skip those.
 Subtitles (optional): GET suburl -> [{"language","url":"/subtitle/.../English.vtt"}] under sub.1x2.space.
 
+Backup URL families (RE 2026-08-05, Bad Monkey S1E3/E4):
+  /vip/<tok>/1/playlist.json  -> vip.1x2.space/playlist/<tok>/master.m3u8 (HLS, works; variants
+                                 are the /playlist/<tok>/<b64>/index.m3u8 paths Reed pasted)
+  /mvid/<tok>/<n>/playlist.json -> VID — cf-master.<ts>.txt?t=...&e=<expired> CDN family (often stale)
+  /meg/tv/.../1/playlist.json -> ps1.1x2.space/enproxy/<tok>/master.m3u8
+  /mdata/<id>/<n>/playlist.json -> NEW (FIL/WIS/LUL/ARA/BIG/MIX...): tik.1x2.space,
+                                 suprox.xpass.top/proxy2/<tok>/2/master.m3u8, dara.1x2.space,
+                                 worker-hosted streams (cfbw.p2l.workers.dev/stream/<tok> = BIG,
+                                 cflul.bw3.workers.dev/vid = LUL, cfmix.bx8.workers.dev/proxy = MIX).
+                                 Worker hosts are gated (404/429 from this host 2026-08-05 —
+                                 probably session/geo/token-registry checks); the HLS ones work.
+  /vxr/, /vrk/ -> {"file":"/video/error"} (dead)
+
 Verified live 2026-08-03: Peppa Pig (2004) S1E2 + S2E1 — VIP/VID/MEG backends return
 working master.m3u8; segments download as MPEG-TS through streamvaultsrc.click proxy.
+2026-08-05: Bad Monkey S1E3/E4 VIP masters download (1920x960 HLS, 30s probe OK).
 The vip.1x2.space playlist URL Reed provided is exactly what this provider returns.
 """
 from __future__ import annotations
@@ -114,6 +131,7 @@ class XpassProvider(Provider):
             raise RuntimeError("xpass: no backups[] in player page (title may be missing)")
 
         last_err = None
+        links: list[StreamLink] = []
         for b in backups:
             u = (b or {}).get("url")
             if not u:
@@ -133,7 +151,7 @@ class XpassProvider(Provider):
                         continue
                     if not f.startswith("http"):
                         f = _http.base_url(pu) + f
-                    return [StreamLink(
+                    links.append(StreamLink(
                         provider=self.id,
                         url=f,
                         quality=s.get("label") or "HLS",
@@ -144,9 +162,12 @@ class XpassProvider(Provider):
                             "Referer": PLAYER + "/",
                         },
                         note=f"xpass {b.get('name')}",
-                    )]
-                last_err = f"{b.get('name')}: no playable source"
+                    ))
+                if not sources:
+                    last_err = f"{b.get('name')}: no playable source"
             except (httpx.HTTPError, ValueError) as e:
                 last_err = f"{b.get('name')}: {type(e).__name__}: {e}"
                 continue
-        raise RuntimeError(f"xpass: all backends failed ({last_err or 'unknown'})")
+        if not links:
+            raise RuntimeError(f"xpass: all backends failed ({last_err or 'unknown'})")
+        return links
