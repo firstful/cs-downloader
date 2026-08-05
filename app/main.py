@@ -269,7 +269,7 @@ def wanted_add(req: WantedRequest):
 
         # Build the candidate pool in reliability order, keeping the known-good
         # priority as a tiebreak for providers with no stats yet.
-        priority = ["videasy", "xpass", "hindmoviez", "2embed", "rivestream"]
+        priority = ["videasy", "xpass", "hindmoviez", "2embed"]
         reliable = db.reliable_provider_order()
         ordered: list[str] = []
         for p in reliable + priority:
@@ -348,26 +348,6 @@ def wanted_add(req: WantedRequest):
                         {"id": "hindmoviez", "source_url": None},
                     ]
                     break
-            elif pid == "rivestream":
-                # Aggregator of 6 backends; probe = full resolve (keylist cached 1h).
-                # Only reached when every earlier provider's probe failed.
-                try:
-                    links = prov.resolve(type("_R", (), {
-                        "media_type": req.media_type, "tmdb_id": tmdb_id,
-                        "season": None, "episode": None,
-                    })())
-                    if links:
-                        provider = "rivestream"
-                        candidates = [
-                            {"id": "rivestream", "source_url": None},
-                            {"id": "videasy", "source_url": ""},
-                            {"id": "xpass", "source_url": None},
-                            {"id": "hindmoviez", "source_url": None},
-                            {"id": "2embed", "source_url": None},
-                        ]
-                        break
-                except Exception:
-                    pass
         if not provider:
             raise HTTPException(404, "no source found on any provider")
 

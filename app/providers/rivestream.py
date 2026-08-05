@@ -50,11 +50,14 @@ class RiveStreamProvider(Provider):
     id = "rivestream"
     name = "RiveStream"
     kind = "source"
-    status = "ok"
+    status = "experimental"
     note = ("multi-backend aggregator (primevids/flowcast/asiacloud/hindicast/guru/ophim). "
-            "Next.js key-list -> CF-worker per-title secret -> backendfetch movie/tvVideoProvider "
-            "-> proxy?url= HLS/MP4 with embedded headers. Reverse-engineered from StreamPlay.cs3 "
-            "v658, verified 2026-08-05 (movie + tv flow, plain-url + proxy-url).")
+            "Resolves correctly (Next.js key-list -> CF-worker per-title secret -> backendfetch "
+            "movie/tvVideoProvider; tries BOTH query-param orders — guru serves some eps only "
+            "with id,service,secretKey,season,episode). NOT in auto-resolve pool 2026-08-05: "
+            "every source URL 403/404s from this host (1shows.app Cloudflare bot, flowcast "
+            "web-cache ACCESS DENIED + proxy unauthorized, guru cf-master tokens expired "
+            "Dec-2025 + hls3 paths 404, ophim 404). Resolver-only until a CDN path opens.")
 
     def search(self, query: str, page: int = 1) -> list[SearchResult]:
         # RiveStream has no own search; metadata comes from TMDB provider.
