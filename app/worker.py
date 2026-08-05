@@ -362,10 +362,14 @@ def _effective_rate() -> float:
 
 
 def _queued_backlog() -> int:
-    """Queued jobs in the DB that are not already live in the pool."""
-    with _live_lock:
-        live = set(_live)
-    return sum(1 for r in db.list_jobs_by_status(("queued",)) if r["id"] not in live)
+    """Jobs waiting to be downloaded (DB 'queued' status).
+
+    At startup recovery ALL queued jobs are enqueued into the in-memory pool
+    and marked _live, so \"queued minus live\" would read 0 forever and the
+    controller would never grow. The demand signal is simply how many jobs
+    still have queued status in the DB.
+    """
+    return len(db.list_jobs_by_status(("queued",)))
 
 
 def _worker_count() -> int:
