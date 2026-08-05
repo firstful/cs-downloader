@@ -5,6 +5,7 @@ Emulates the CloudStream MainAPI model over HTTP:
 """
 from __future__ import annotations
 
+import logging
 import os
 import time
 
@@ -21,6 +22,11 @@ from .models import DownloadRequest, LinksRequest, LinksResponse, Job, SearchRes
 from .providers import registry
 from .providers.hindmoviez import HindmoviezProvider
 from .providers.tmdb import TMDBProvider
+
+# Show INFO from the worker/reconciler loggers (adaptive concurrency decisions,
+# provider failover, job launches) — the default root level hides them.
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 app = FastAPI(title="StreamPlay Service", version="1.0.0")
 
