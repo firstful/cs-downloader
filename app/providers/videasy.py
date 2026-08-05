@@ -69,6 +69,7 @@ class VideasyProvider(Provider):
 
     def _fetch_seed(self, api: str, tmdb_id: int) -> str | None:
         try:
+            _http.acquire_ext_api()  # shared third-party API cap (seed + dec share the bucket)
             r = _http.get(f"{api}/seed", params={"mediaId": tmdb_id}, headers=HEADERS)
             r.raise_for_status()
             return (r.json() or {}).get("seed")
@@ -94,6 +95,7 @@ class VideasyProvider(Provider):
 
     def _decrypt(self, enc_text: str, tmdb_id: int, seed: str) -> dict | None:
         try:
+            _http.acquire_ext_api()
             r = _http.post(
                 DEC_API,
                 data=json.dumps({"text": enc_text, "id": tmdb_id, "seed": seed}),
@@ -125,6 +127,7 @@ class VideasyProvider(Provider):
         for server in SERVERS:
             try:
                 url = self._sources_url(api, server, req, seed)
+                _http.acquire_ext_api()  # speedracelight sources call — same shared cap
                 r = _http.get(url, headers=HEADERS)
                 if r.status_code != 200:
                     last_err = f"{server}: HTTP {r.status_code}"

@@ -41,6 +41,13 @@ ADAPTIVE_HIGH = float(os.environ.get("SP_ADAPTIVE_HIGH", "0.85"))            # >
 RATE_LIMIT_BYTES = int(os.environ.get("SP_RATE_LIMIT_BYTES", str(5 * 1024 ** 3)))
 RATE_WINDOW_SECONDS = int(os.environ.get("SP_RATE_WINDOW_SECONDS", "600"))
 
+# Third-party decrypt/seed services (enc-dec.app + videasy speedracelight seed).
+# enc-dec.app is CLOSED-SOURCE with a generous 40 req/s cap (Reed 2026-08-05: "we
+# can use it as a dep — just stay well below that"). ALSO covers the videasy seed
+# API which Cloudflare rate-limits per-IP (~1015 after rapid bursts). Default 8/s =
+# 5x margin under enc-dec.app's cap; tune via SP_ENC_DEC_MAX_RPS if ever needed.
+ENC_DEC_MAX_RPS = float(os.environ.get("SP_ENC_DEC_MAX_RPS", "8"))
+
 # Reconciler (wanted-library): sweep cadence + retry backoff for failed attempts
 RECONCILE_INTERVAL = int(os.environ.get("SP_RECONCILE_INTERVAL", "900"))   # seconds between sweeps
 RETRY_SECONDS = int(os.environ.get("SP_RETRY_SECONDS", "14400"))           # 4h default retry window

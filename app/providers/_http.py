@@ -6,6 +6,8 @@ Includes the Dean Edwards p.a.c.k.e.r unpacker used by uqload-style players
 from __future__ import annotations
 
 import re
+import threading
+import time
 
 import httpx
 
@@ -16,6 +18,48 @@ _CLIENT = httpx.Client(
     follow_redirects=True,
     headers={"User-Agent": config.USER_AGENT},
 )
+
+
+# ---- Shared rate limiter for third-party decrypt/seed services ---------------
+# enc-dec.app is a closed-source dependency (Reed 2026-08-05): "generous rate limit
+# 40/s — just make sure we stay well below that and we can use it as a dep."
+# We ALSO rate-limit the videasy seed API here: it Cloudflare-throttles per-IP
+# (tripped 1015 on 2026-08-05 with ~30 rapid calls). Token bucket, process-wide,
+# thread-safe. Providers call `acquire_ext_api()` before every outbound call to
+# enc-dec.app / speedracelight seed+sources endpoints.
+
+class _TokenBucket:
+    def __init__(self, rate: float):
+        self._rate = rate
+        self._tokens = rate          # start full (burst = one second of capacity)
+        self._last = time.monotonic()
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            self._tokens = min(self._rate, self._tokens + (now - self._last) * self._rate)
+            self._last = now
+            if self._tokens >= 1.0:
+                self._tokens -= 1.0
+                return
+            wait = (1.0 - self._tokens) / self._rate
+            self._tokens = 0.0
+            self._last = now + wait
+        time.sleep(wait)
+
+
+_bucket: _TokenBucket | None = None
+_bucket_lock = threading.Lock()
+
+
+def acquire_ext_api() -> None:
+    """Block until a slot for the shared third-party API is free (config.ENC_DEC_MAX_RPS)."""
+    global _bucket
+    with _bucket_lock:
+        if _bucket is None:
+            _bucket = _TokenBucket(config.ENC_DEC_MAX_RPS)
+    _bucket.acquire()
 
 
 def get(url: str, *, referer: str | None = None, headers: dict | None = None, params: dict | None = None) -> httpx.Response:

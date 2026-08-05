@@ -75,6 +75,7 @@ class PeachifyProvider(Provider):
         if req.media_type == "tv":
             url += f"/{req.season}/{req.episode}"
         try:
+            _http.acquire_ext_api()  # shared third-party API cap
             r = _http.get(url, headers=HEADERS)
             if r.status_code != 200:
                 return None
@@ -85,6 +86,7 @@ class PeachifyProvider(Provider):
 
     def _decrypt(self, enc_text: str) -> dict | None:
         try:
+            _http.acquire_ext_api()
             r = _http.post(
                 DEC_API,
                 data=json.dumps({"text": enc_text}),
