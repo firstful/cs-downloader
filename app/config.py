@@ -63,3 +63,34 @@ FFMPEG_BIN = os.environ.get("SP_FFMPEG_BIN", "ffmpeg")
 DISABLED_PROVIDERS = {
     p.strip() for p in os.environ.get("SP_DISABLED_PROVIDERS", "").split(",") if p.strip()
 }
+
+# Post-download validation filters (comma separated ids; empty disables all).
+# Filters run in the worker after download+remux and before the file is moved
+# into the flat downloads dir; a failing filter rejects the file and the worker
+# tries the next link.
+FILTERS = {
+    p.strip() for p in os.environ.get("SP_FILTERS", "aspect_ratio,duration").split(",") if p.strip()
+}
+
+# aspect_ratio filter tuning
+AR_TOLERANCE = float(os.environ.get("SP_AR_TOLERANCE", "0.08"))        # relative diff allowed (0.08 = 8%)
+AR_SAMPLES = int(os.environ.get("SP_AR_SAMPLES", "12"))                # cropdetect frames sampled
+AR_SKIP_START = float(os.environ.get("SP_AR_SKIP_START", "0.03"))      # skip first 3% of duration
+AR_SKIP_END = float(os.environ.get("SP_AR_SKIP_END", "0.05"))          # skip last 5% (credits/end cards)
+AR_MIN_CROP_FRACTION = float(os.environ.get("SP_AR_MIN_CROP_FRACTION", "0.5"))  # crop must be >= 50% of frame in each dim to count
+AR_TV_DEFAULT = float(os.environ.get("SP_AR_TV_DEFAULT", "1.777778"))  # 16:9 strict expected for TV
+AR_MOVIE_FALLBACK = float(os.environ.get("SP_AR_MOVIE_FALLBACK", "1.777778"))  # strict expected when a movie has no explicit value
+AR_MODE_TV = os.environ.get("SP_AR_MODE_TV", "strict")     # strict|lenient (see filters/aspect_ratio.py)
+AR_MODE_MOVIE = os.environ.get("SP_AR_MODE_MOVIE", "lenient")  # strict|lenient
+# What a FAILING filter does to the download:
+#   soft (default) — keep the file, finish the job, attach a filter_warnings
+#                    note to the job row + .json sidecar (still watchable)
+#   hard           — discard the file, fail this link, try the next one
+AR_ACTION = os.environ.get("SP_AR_ACTION", "soft")   # soft|hard
+AR_FFPROBE_BIN = os.environ.get("SP_FFPROBE_BIN", "ffprobe")
+
+# duration filter tuning (catches wrong-content: a movie served for a TV ep)
+DUR_TOLERANCE = float(os.environ.get("SP_DUR_TOLERANCE", "0.6"))  # ±60% of expected runtime
+# hard (default) — wrong content must NOT land in the library; discard + try
+# next link. soft — keep the file, attach a filter_warnings note.
+DUR_ACTION = os.environ.get("SP_DUR_ACTION", "hard")   # soft|hard

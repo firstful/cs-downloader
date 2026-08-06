@@ -27,12 +27,14 @@ CREATE TABLE IF NOT EXISTS jobs (
     quality TEXT,
     kid_friendly INTEGER NOT NULL DEFAULT 0,
     priority INTEGER NOT NULL DEFAULT 0,
+    expected_aspect_ratio REAL,
     progress REAL NOT NULL DEFAULT 0,
     bytes_downloaded INTEGER NOT NULL DEFAULT 0,
     total_bytes INTEGER,
     filename TEXT,
     file_size INTEGER,
     error TEXT,
+    filter_warnings TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -57,6 +59,7 @@ CREATE TABLE IF NOT EXISTS wanted (
     providers TEXT,                       -- JSON array of candidate provider ids (auto-resolve order)
     media_type TEXT NOT NULL DEFAULT 'movie',
     quality TEXT,
+    expected_aspect_ratio REAL,
     status TEXT NOT NULL DEFAULT 'wanted',      -- wanted | attempting | downloaded | failed
     job_id INTEGER,
     downloaded_job_id INTEGER,
@@ -83,15 +86,22 @@ def _connect() -> sqlite3.Connection:
 def init_db() -> None:
     with _connect() as conn:
         conn.executescript(_SCHEMA)
-        # migration: wanted season/episode (older DBs lack the columns)
-        for col in ("season INTEGER", "episode INTEGER", "tmdb_id INTEGER", "providers TEXT", "kid_friendly INTEGER NOT NULL DEFAULT 0", "priority INTEGER NOT NULL DEFAULT 0"):
+        # migrations for older DBs: add columns added after initial deploy
+        for table, col in (
+            ("wanted", "season INTEGER"),
+            ("wanted", "episode INTEGER"),
+            ("wanted", "tmdb_id INTEGER"),
+            ("wanted", "providers TEXT"),
+            ("wanted", "kid_friendly INTEGER NOT NULL DEFAULT 0"),
+            ("wanted", "priority INTEGER NOT NULL DEFAULT 0"),
+            ("wanted", "expected_aspect_ratio REAL"),
+            ("jobs", "kid_friendly INTEGER NOT NULL DEFAULT 0"),
+            ("jobs", "priority INTEGER NOT NULL DEFAULT 0"),
+            ("jobs", "expected_aspect_ratio REAL"),
+            ("jobs", "filter_warnings TEXT"),
+        ):
             try:
-                conn.execute(f"ALTER TABLE wanted ADD COLUMN {col}")
-            except sqlite3.OperationalError:
-                pass  # already present
-        for col in ("kid_friendly INTEGER NOT NULL DEFAULT 0", "priority INTEGER NOT NULL DEFAULT 0"):
-            try:
-                conn.execute(f"ALTER TABLE jobs ADD COLUMN {col}")
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
             except sqlite3.OperationalError:
                 pass  # already present
 
@@ -113,13 +123,14 @@ def _now() -> str:
 
 def create_job(title: str, provider: str, tmdb_id=None, imdb_id=None,
                media_type="movie", season=None, episode=None, quality=None,
-               kid_friendly: bool = False, priority: int = 0) -> int:
+               kid_friendly: bool = False, priority: int = 0,
+               expected_aspect_ratio=None) -> int:
     with _cursor() as conn:
         cur = conn.execute(
-            "INSERT INTO jobs (title, provider, tmdb_id, imdb_id, media_type, season, episode, quality, kid_friendly, priority, created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO jobs (title, provider, tmdb_id, imdb_id, media_type, season, episode, quality, kid_friendly, priority, expected_aspect_ratio, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (title, provider, tmdb_id, imdb_id, media_type, season, episode, quality,
-             1 if kid_friendly else 0, priority, _now(), _now()),
+             1 if kid_friendly else 0, priority, expected_aspect_ratio, _now(), _now()),
         )
         return int(cur.lastrowid)
 
@@ -173,16 +184,17 @@ def create_wanted(title: str, provider: str, source_url: str,
                   season: int | None = None, episode: int | None = None,
                   tmdb_id: int | None = None,
                   providers: list[dict] | None = None,
-                  kid_friendly: bool = False, priority: int = 0) -> int:
+                  kid_friendly: bool = False, priority: int = 0,
+                  expected_aspect_ratio: float | None = None) -> int:
     with _cursor() as conn:
         cur = conn.execute(
             "INSERT INTO wanted (title, provider, source_url, tmdb_id, providers, media_type, quality,"
-            " season, episode, kid_friendly, priority, status, next_attempt_at, created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?, 'wanted', 0, ?, ?)",
+            " season, episode, kid_friendly, priority, expected_aspect_ratio, status, next_attempt_at, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'wanted', 0, ?, ?)",
             (title, provider, source_url, tmdb_id,
              json.dumps(providers) if providers else None,
              media_type, quality, season, episode,
-             1 if kid_friendly else 0, priority, _now(), _now()),
+             1 if kid_friendly else 0, priority, expected_aspect_ratio, _now(), _now()),
         )
         return int(cur.lastrowid)
 

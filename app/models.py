@@ -75,6 +75,7 @@ class DownloadRequest(BaseModel):
     title: Optional[str] = None
     provider: str = "2embed"
     quality: Optional[str] = None
+    expected_aspect_ratio: Optional[float] = None   # e.g. 2.39 — pins the AR filter (strict)
 
 
 class WantedRequest(BaseModel):
@@ -90,6 +91,7 @@ class WantedRequest(BaseModel):
     episodes: list[dict] = Field(default_factory=list)    # [{"season":1,"episode":3}, ...] partial picks
     kid_friendly: bool = False                            # route to the Kids library
     priority: int = 0                 # higher = earlier in the queue (declarative ordering)
+    expected_aspect_ratio: Optional[float] = None   # pins the AR filter (strict)
 
 class Job(BaseModel):
     id: int
@@ -102,5 +104,6 @@ class Job(BaseModel):
     filename: Optional[str] = None
     file_size: Optional[int] = None
     error: Optional[str] = None
+    filter_warnings: Optional[str] = None   # e.g. "aspect_ratio filter: expected 1.778 got 0.466"
     created_at: str = ""
     updated_at: str = ""

@@ -111,7 +111,7 @@ def _safe_name(title: str) -> str:
     return name.strip(" _.") or "download"
 
 
-def _write_sidecar(final: str, job: dict) -> None:
+def _write_sidecar(final: str, job: dict, warnings: list[str] | None = None) -> None:
     """Write a .json metadata sidecar next to the finished file for the ingest watcher."""
     try:
         meta = {
@@ -124,6 +124,8 @@ def _write_sidecar(final: str, job: dict) -> None:
             "kid_friendly": bool(job.get("kid_friendly")),
             "downloaded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
+        if warnings:
+            meta["filter_warnings"] = warnings
         sidecar = final + ".json"
         with open(sidecar, "w") as f:
             json.dump(meta, f)
@@ -167,6 +169,33 @@ def _remux_mp4(path: str) -> str:
         os.replace(out, path)
         return path
     return path
+
+
+def _discard_download(path: str) -> None:
+    """Best-effort remove a filter-rejected file and its (now empty) job dir."""
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+        parent = os.path.dirname(path) if path else ""
+        if parent and os.path.isdir(parent):
+            try:
+                os.rmdir(parent)  # only removes if empty
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def _run_filters(path: str, job: dict) -> list:
+    """Run post-download validation filters. Returns ALL FilterResults.
+
+    job["expected_aspect_ratio"] (if the API caller pinned one) drives strict
+    comparison; otherwise the filter uses its per-type mode defaults.
+    """
+    from . import filters as media_filters
+    if not config.FILTERS:
+        return []
+    return media_filters.run(path, job, enabled=sorted(config.FILTERS))
 
 
 def _run_ytdlp(job_id: int, url: str, out_dir: str, out_tmpl: str,
@@ -310,13 +339,22 @@ def _process(job_id: int):
                 )
                 if path and os.path.exists(path) and os.path.getsize(path) > 0:
                     path = _remux_mp4(path)
+                    results = _run_filters(path, job)
+                    failing = [r for r in results if not r.passed]
+                    warnings = [r.to_error() for r in failing]
+                    if failing and any(r.action == "hard" for r in failing):
+                        # strict gate: discard the file and try the next link
+                        last_err = "; ".join(warnings)
+                        _discard_download(path)
+                        continue
                     size = os.path.getsize(path)
                     # move into flat downloads dir with a stable name
                     final = os.path.join(config.DOWNLOAD_DIR, f"{job_id}_{os.path.basename(path)}")
                     os.replace(path, final)
                     db.update_job(job_id, status="done", progress=100.0,
-                                  filename=os.path.basename(final), file_size=size)
-                    _write_sidecar(final, job)
+                                  filename=os.path.basename(final), file_size=size,
+                                  filter_warnings="; ".join(warnings) if warnings else None)
+                    _write_sidecar(final, job, warnings=warnings or None)
                     db.record_provider_attempt(job["provider"], ok=True,
                                                bytes_downloaded=size,
                                                quality=link.quality or job.get("quality"))

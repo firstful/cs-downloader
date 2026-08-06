@@ -179,6 +179,7 @@ def enqueue(req: DownloadRequest):
         season=req.season,
         episode=req.episode,
         quality=req.quality,
+        expected_aspect_ratio=req.expected_aspect_ratio,
     )
     worker.enqueue(job_id)
     return {"id": job_id, "status": "queued"}
@@ -420,7 +421,8 @@ def wanted_add(req: WantedRequest):
                                req.media_type, req.quality, sn, ep,
                                tmdb_id=tmdb_id, providers=candidates,
                                kid_friendly=kid_flag,
-                               priority=req.priority)
+                               priority=req.priority,
+                               expected_aspect_ratio=req.expected_aspect_ratio)
         created.append(db.get_wanted(wid))
 
     # first sweep happens soon after startup; nudge the reconciler for fast kickoff
