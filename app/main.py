@@ -9,7 +9,7 @@ import logging
 import os
 import time
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
@@ -468,10 +468,17 @@ def wanted_delete(wanted_id: int):
 
 
 @app.post("/api/wanted/{wanted_id}/retry")
-def wanted_retry(wanted_id: int):
+def wanted_retry(wanted_id: int, req: Optional[dict] = Body(default=None)):
+    """Requeue a wanted row now. Optional body {"provider": "<id>"} pins the
+    next attempt to a specific source (stylecheck uses this to requeue style
+    outliers from a DIFFERENT provider than the one that produced the junk)."""
     w = db.get_wanted(wanted_id)
     if not w:
         raise HTTPException(404, "no such wanted item")
-    db.update_wanted(wanted_id, status="wanted", job_id=None, next_attempt_at=0)
+    fields = {"status": "wanted", "job_id": None, "next_attempt_at": 0}
+    provider = (req or {}).get("provider")
+    if provider:
+        fields["provider"] = str(provider)
+    db.update_wanted(wanted_id, **fields)
     reconciler.nudge()
     return db.get_wanted(wanted_id)
