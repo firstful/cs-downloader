@@ -211,6 +211,39 @@ def job_file(job_id: int):
     return FileResponse(path, filename=job["filename"], media_type="application/octet-stream")
 
 
+# ---- per-URL exclusions (blocked_urls) --------------------------------------
+
+@app.get("/api/blocked-urls")
+def blocked_urls_list():
+    """All per-URL exclusion patterns (manual + auto). hit_count = skips."""
+    return {"blocked": db.list_blocked_urls()}
+
+
+@app.post("/api/blocked-urls")
+def blocked_urls_add(body: dict):
+    """Block a URL substring. {pattern, reason?, provider?} — exact URL or
+    host/path fragment; any link whose url CONTAINS the pattern is skipped.
+    Idempotent. Use a fragment to block a whole bad CDN path, or the full URL
+    to block one link."""
+    pattern = str(body.get("pattern") or "").strip()
+    if not pattern:
+        raise HTTPException(400, "pattern required")
+    row = db.add_blocked_url(
+        pattern,
+        reason=str(body.get("reason") or "manual"),
+        source="manual",
+        provider=str(body.get("provider") or ""),
+    )
+    return row
+
+
+@app.delete("/api/blocked-urls/{blocked_id}")
+def blocked_urls_remove(blocked_id: int):
+    if not db.remove_blocked_url(blocked_id):
+        raise HTTPException(404, "no such blocked pattern")
+    return {"ok": True}
+
+
 @app.delete("/api/downloads/{job_id}")
 def job_delete(job_id: int):
     job = db.get_job(job_id)

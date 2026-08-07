@@ -28,6 +28,12 @@ _workers_lock = threading.Lock()
 _retire = 0                        # workers asked to stop (adaptive shrink)
 _adaptive: threading.Thread | None = None
 _job_lock = threading.Lock()
+
+# Per-URL exclusion state (2026-08-07): track consecutive failures per URL in
+# memory; when a URL hits BLOCK_URL_AFTER_FAILURES, persist it to blocked_urls
+# so every future worker skips it. Lock-guarded, keyed by exact URL string.
+_url_failures: dict[str, int] = {}
+_url_failures_lock = threading.Lock()
 _live: set[int] = set()          # job_ids in the pool queue or being processed
 _live_lock = threading.Lock()
 
@@ -186,6 +192,56 @@ def _discard_download(path: str) -> None:
         pass
 
 
+# ---- per-URL exclusions ----------------------------------------------------
+
+def _url_blocked(url: str) -> bool:
+    """True if this link URL is already blocked (skip it without trying)."""
+    if not config.BLOCK_URL_ENABLED:
+        return False
+    blocked_id = db.match_blocked_id(url)
+    if blocked_id is not None:
+        db.record_blocked_hit(blocked_id)
+        return True
+    return False
+
+
+def _remember_url_failure(url: str, reason: str) -> bool:
+    """Count one failure for a URL; auto-block when it hits the threshold.
+
+    Returns True if the URL was JUST blocked (caller may log it). The
+    in-memory count persists across jobs in this process; blocked_urls is
+    durable across restarts.
+    """
+    if not config.BLOCK_URL_ENABLED:
+        return False
+    with _url_failures_lock:
+        _url_failures[url] = _url_failures.get(url, 0) + 1
+        count = _url_failures[url]
+    if count >= config.BLOCK_URL_AFTER_FAILURES:
+        # extract a stable pattern: drop query strings / fragment for substring match
+        pattern = url.split("?")[0].split("#")[0].strip()
+        if pattern:
+            try:
+                db.add_blocked_url(pattern, reason=reason,
+                                   source="auto_fail", provider="")
+            except Exception:
+                pass
+        return True
+    return False
+
+
+def _block_url_filter(url: str, reason: str) -> None:
+    """Auto-block a URL that a HARD filter rejected (wrong content)."""
+    if not config.BLOCK_URL_ENABLED:
+        return
+    pattern = url.split("?")[0].split("#")[0].strip()
+    if pattern:
+        try:
+            db.add_blocked_url(pattern, reason=reason, source="auto_filter", provider="")
+        except Exception:
+            pass
+
+
 def _run_filters(path: str, job: dict) -> list:
     """Run post-download validation filters. Returns ALL FilterResults.
 
@@ -329,7 +385,11 @@ def _process(job_id: int):
     _rebalance_ratelimits()   # shrink survivors' shares for the new arrival
     try:
         last_err = None
+        skipped_blocked = 0
         for link in links:
+            if _url_blocked(link.url):
+                skipped_blocked += 1
+                continue
             try:
                 path = _run_ytdlp(
                     job_id, link.url, out_dir, out_tmpl,
@@ -346,6 +406,7 @@ def _process(job_id: int):
                         # strict gate: discard the file and try the next link
                         last_err = "; ".join(warnings)
                         _discard_download(path)
+                        _block_url_filter(link.url, "hard filter: " + last_err[:160])
                         continue
                     size = os.path.getsize(path)
                     # move into flat downloads dir with a stable name
@@ -362,10 +423,18 @@ def _process(job_id: int):
                     return
             except Exception as e:  # noqa: BLE001
                 last_err = f"{type(e).__name__}: {e}"
+                if _remember_url_failure(link.url, last_err[:160]):
+                    log.info("auto-blocked url (failed %dx): %s",
+                             config.BLOCK_URL_AFTER_FAILURES, link.url)
                 continue
 
+        if skipped_blocked:
+            log.info("job %s: skipped %d blocked url(s); all links failed: %s",
+                     job_id, skipped_blocked, last_err or "unknown")
         db.record_provider_attempt(job["provider"], ok=False)
-        db.update_job(job_id, status="error", error=f"all links failed: {last_err or 'unknown'}")
+        db.update_job(job_id, status="error",
+                      error=f"all links failed: {last_err or 'unknown'}"
+                            + (f" ({skipped_blocked} blocked skipped)" if skipped_blocked else ""))
     finally:
         with _ratelock:
             _active_downloads -= 1

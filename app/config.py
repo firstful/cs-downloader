@@ -94,3 +94,10 @@ DUR_TOLERANCE = float(os.environ.get("SP_DUR_TOLERANCE", "0.6"))  # ±60% of exp
 # hard (default) — wrong content must NOT land in the library; discard + try
 # next link. soft — keep the file, attach a filter_warnings note.
 DUR_ACTION = os.environ.get("SP_DUR_ACTION", "hard")   # soft|hard
+
+# Per-URL exclusions (2026-08-07): block individual bad links, not providers.
+# A provider may return 5 links, 2 good / 3 junk — junk URLs get auto-blocked
+# after BLOCK_URL_AFTER_FAILURES consecutive failures (yt-dlp error) or one
+# hard-filter rejection (wrong content), while the provider stays usable.
+BLOCK_URL_ENABLED = os.environ.get("SP_BLOCK_URL_ENABLED", "1") not in ("0", "false", "False")
+BLOCK_URL_AFTER_FAILURES = int(os.environ.get("SP_BLOCK_URL_AFTER_FAILURES", "2"))

@@ -72,6 +72,21 @@ CREATE TABLE IF NOT EXISTS wanted (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- Per-URL exclusions (Reed 2026-08-07): a provider may return 5 links, 2 good,
+-- 3 junk. Blocking the whole provider is wrong — block individual URLs instead.
+-- pattern is a substring of the URL (exact URL or host/path fragment); worker
+-- skips any link whose url contains a blocked pattern BEFORE trying it.
+CREATE TABLE IF NOT EXISTS blocked_urls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern TEXT NOT NULL UNIQUE,
+    reason TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'manual',   -- manual | auto_fail | auto_filter
+    provider TEXT NOT NULL DEFAULT '',
+    hit_count INTEGER NOT NULL DEFAULT 0,    -- times the worker skipped it
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -317,3 +332,63 @@ def reliable_provider_order() -> list[str]:
         scored.append((rate + recency + floor, s["provider"]))
     scored.sort(key=lambda x: x[0], reverse=True)
     return [p for _, p in scored]
+
+
+# ---- per-URL exclusions (blocked_urls) -------------------------------------
+
+def blocked_patterns() -> list[str]:
+    """All active blocked URL patterns (substring match against link.url)."""
+    with _cursor() as conn:
+        rows = conn.execute("SELECT pattern FROM blocked_urls").fetchall()
+        return [r["pattern"] for r in rows]
+
+
+def is_url_blocked(url: str) -> bool:
+    """True if url contains any blocked pattern."""
+    with _cursor() as conn:
+        rows = conn.execute("SELECT pattern FROM blocked_urls").fetchall()
+    return any(p in url for p in (r["pattern"] for r in rows))
+
+
+def list_blocked_urls() -> list[dict]:
+    with _cursor() as conn:
+        rows = conn.execute(
+            "SELECT * FROM blocked_urls ORDER BY created_at DESC").fetchall()
+        return [dict(r) for r in rows]
+
+
+def add_blocked_url(pattern: str, reason: str = "", source: str = "manual",
+                    provider: str = "") -> dict:
+    """Insert a blocked pattern (idempotent). Returns the row dict."""
+    now = _now()
+    with _cursor() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO blocked_urls (pattern, reason, source, provider, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?)",
+            (pattern.strip(), reason, source, provider, now, now),
+        )
+        row = conn.execute("SELECT * FROM blocked_urls WHERE pattern=?",
+                           (pattern.strip(),)).fetchone()
+        return dict(row)
+
+
+def remove_blocked_url(blocked_id: int) -> bool:
+    with _cursor() as conn:
+        cur = conn.execute("DELETE FROM blocked_urls WHERE id=?", (blocked_id,))
+        return cur.rowcount > 0
+
+
+def record_blocked_hit(blocked_id: int) -> None:
+    with _cursor() as conn:
+        conn.execute("UPDATE blocked_urls SET hit_count=hit_count+1, updated_at=? WHERE id=?",
+                     (_now(), blocked_id))
+
+
+def match_blocked_id(url: str) -> int | None:
+    """Return the id of the first blocked pattern contained in url, else None."""
+    with _cursor() as conn:
+        rows = conn.execute("SELECT id, pattern FROM blocked_urls").fetchall()
+    for r in rows:
+        if r["pattern"] in url:
+            return r["id"]
+    return None
