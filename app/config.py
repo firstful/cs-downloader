@@ -69,7 +69,7 @@ DISABLED_PROVIDERS = {
 # into the flat downloads dir; a failing filter rejects the file and the worker
 # tries the next link.
 FILTERS = {
-    p.strip() for p in os.environ.get("SP_FILTERS", "aspect_ratio,duration").split(",") if p.strip()
+    p.strip() for p in os.environ.get("SP_FILTERS", "aspect_ratio,duration,continuity").split(",") if p.strip()
 }
 
 # aspect_ratio filter tuning
@@ -101,3 +101,17 @@ DUR_ACTION = os.environ.get("SP_DUR_ACTION", "hard")   # soft|hard
 # hard-filter rejection (wrong content), while the provider stays usable.
 BLOCK_URL_ENABLED = os.environ.get("SP_BLOCK_URL_ENABLED", "1") not in ("0", "false", "False")
 BLOCK_URL_AFTER_FAILURES = int(os.environ.get("SP_BLOCK_URL_AFTER_FAILURES", "2"))
+
+# HLS fragment integrity (2026-08-16 Peppa incident): yt-dlp's default
+# skip_unavailable_fragments=True silently DROPS segments that fail after
+# fragment_retries, producing files with exact 5-10s video+audio holes
+# (74 Peppa eps via xpass on 2026-08-04). Fail the download instead, so the
+# job retries the next link / the URL gets auto-blocked after 2 failures.
+FRAGMENT_RETRIES = int(os.environ.get("SP_FRAGMENT_RETRIES", "10"))
+
+# continuity filter: reject files with timestamp gaps (missing segments).
+# hard (default) — integrity class, same as duration: broken content must NOT
+# land in the library. Detector-inconclusive always passes with a note.
+CONT_GAP_THRESHOLD = float(os.environ.get("SP_CONT_GAP_THRESHOLD", "0.5"))  # seconds
+CONT_ACTION = os.environ.get("SP_CONT_ACTION", "hard")   # soft|hard
+CONT_FFPROBE_BIN = os.environ.get("SP_CONT_FFPROBE_BIN", "ffprobe")

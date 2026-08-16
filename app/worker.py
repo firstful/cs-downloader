@@ -265,7 +265,12 @@ def _run_ytdlp(job_id: int, url: str, out_dir: str, out_tmpl: str,
         "quiet": True,
         "no_warnings": True,
         "retries": config.MAX_RETRIES,
-        "fragment_retries": config.MAX_RETRIES,
+        "fragment_retries": config.FRAGMENT_RETRIES,
+        # Never silently skip a failed HLS fragment (default True) — that
+        # produced the 08-04 xpass batch's 5-10s holes. A fragment that fails
+        # after retries now FAILS the download; the job retries the next link
+        # and the URL is auto-blocked after SP_BLOCK_URL_AFTER_FAILURES.
+        "skip_unavailable_fragments": False,
         "concurrent_fragment_downloads": 4,
         "remux_video": "mp4",
         "ratelimit": ratelimit,          # None = no per-job cap (yt-dlp default)

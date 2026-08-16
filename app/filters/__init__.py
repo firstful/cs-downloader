@@ -78,3 +78,4 @@ def run(path: str, job: dict, enabled: Optional[list[str]] = None) -> list[Filte
 # Import filter modules so their @register decorators run.
 from . import aspect_ratio  # noqa: E402,F401
 from . import duration  # noqa: E402,F401
+from . import continuity  # noqa: E402,F401
