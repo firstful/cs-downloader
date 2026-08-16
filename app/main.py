@@ -501,10 +501,13 @@ def wanted_delete(wanted_id: int):
 
 
 @app.post("/api/wanted/{wanted_id}/retry")
-def wanted_retry(wanted_id: int, req: Optional[dict] = Body(default=None)):
+def wanted_retry(wanted_id: int, req: dict = Body(default=None)):
     """Requeue a wanted row now. Optional body {"provider": "<id>"} pins the
     next attempt to a specific source (stylecheck uses this to requeue style
-    outliers from a DIFFERENT provider than the one that produced the junk)."""
+    outliers from a DIFFERENT provider than the one that produced the junk).
+    NOTE: annotation is bare `dict` (not Optional[dict]) — under
+    `from __future__ import annotations` pydantic 2.10 fails to resolve
+    ForwardRef('Optional[dict]') and 500s on any body (fixed 2026-08-16)."""
     w = db.get_wanted(wanted_id)
     if not w:
         raise HTTPException(404, "no such wanted item")
