@@ -117,8 +117,38 @@ def _safe_name(title: str) -> str:
     return name.strip(" _.") or "download"
 
 
-def _write_sidecar(final: str, job: dict, warnings: list[str] | None = None) -> None:
-    """Write a .json metadata sidecar next to the finished file for the ingest watcher."""
+def _urls_from_info(info: dict | None) -> list[str]:
+    """Source URLs to record in the sidecar provenance (best-effort)."""
+    if not info:
+        return []
+    raw = [info.get("webpage_url"), info.get("original_url"), info.get("url")]
+    return [u for u in dict.fromkeys(u for u in raw if isinstance(u, str) and u)][:5]
+
+
+def _sha256(path: str) -> str | None:
+    """Best-effort sha256 of a finished file for the provenance record."""
+    import hashlib
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _write_sidecar(final: str, job: dict, warnings: list[str] | None = None,
+                   source_urls: list[str] | None = None) -> None:
+    """Write a .json metadata sidecar next to the finished file for the ingest watcher.
+
+    provenance follows the media-dispatcher finalize contract (finalize.py):
+      downloader, trusted_source (bool), source_urls, content_hash, tvdb_id.
+    trusted_source stays False — cs-downloader aggregates third-party streams
+    (identity can be wrong), so the dispatcher keeps full TVDB verification.
+    The record itself (urls + hash + downloader) satisfies the provenance
+    check on its own.
+    """
     try:
         meta = {
             "media_type": job.get("media_type") or "movie",
@@ -129,6 +159,12 @@ def _write_sidecar(final: str, job: dict, warnings: list[str] | None = None) -> 
             "provider": job.get("provider"),
             "kid_friendly": bool(job.get("kid_friendly")),
             "downloaded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "provenance": {
+                "downloader": "cs-downloader",
+                "trusted_source": False,
+                "source_urls": list(dict.fromkeys(source_urls or [])),
+                "content_hash": _sha256(final),
+            },
         }
         if warnings:
             meta["filter_warnings"] = warnings
@@ -299,7 +335,7 @@ def _run_ytdlp(job_id: int, url: str, out_dir: str, out_tmpl: str,
                         path = req[0].get("filepath") or ""
                     if not path:
                         path = ydl.prepare_filename(info)
-                return path
+                return path, _urls_from_info(info)
             finally:
                 with _ratelock:
                     _active_ydls.pop(job_id, None)
@@ -314,8 +350,8 @@ def _run_ytdlp(job_id: int, url: str, out_dir: str, out_tmpl: str,
         # find the file
         for f in os.listdir(out_dir):
             if not f.endswith((".part", ".ytdl")):
-                return os.path.join(out_dir, f)
-        return ""
+                return os.path.join(out_dir, f), []
+        return "", []
 
 
 def _worker_loop():
@@ -396,7 +432,7 @@ def _process(job_id: int):
                 skipped_blocked += 1
                 continue
             try:
-                path = _run_ytdlp(
+                path, src_urls = _run_ytdlp(
                     job_id, link.url, out_dir, out_tmpl,
                     referer=link.referer or link.headers.get("Referer"),
                     headers=link.headers,
@@ -420,7 +456,8 @@ def _process(job_id: int):
                     db.update_job(job_id, status="done", progress=100.0,
                                   filename=os.path.basename(final), file_size=size,
                                   filter_warnings="; ".join(warnings) if warnings else None)
-                    _write_sidecar(final, job, warnings=warnings or None)
+                    _write_sidecar(final, job, warnings=warnings or None,
+                                   source_urls=src_urls)
                     db.record_provider_attempt(job["provider"], ok=True,
                                                bytes_downloaded=size,
                                                quality=link.quality or job.get("quality"))
