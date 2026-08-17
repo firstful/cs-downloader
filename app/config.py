@@ -69,7 +69,7 @@ DISABLED_PROVIDERS = {
 # into the flat downloads dir; a failing filter rejects the file and the worker
 # tries the next link.
 FILTERS = {
-    p.strip() for p in os.environ.get("SP_FILTERS", "aspect_ratio,duration,continuity").split(",") if p.strip()
+    p.strip() for p in os.environ.get("SP_FILTERS", "aspect_ratio,duration,continuity,camrip").split(",") if p.strip()
 }
 
 # aspect_ratio filter tuning
@@ -115,3 +115,11 @@ FRAGMENT_RETRIES = int(os.environ.get("SP_FRAGMENT_RETRIES", "10"))
 CONT_GAP_THRESHOLD = float(os.environ.get("SP_CONT_GAP_THRESHOLD", "0.5"))  # seconds
 CONT_ACTION = os.environ.get("SP_CONT_ACTION", "hard")   # soft|hard
 CONT_FFPROBE_BIN = os.environ.get("SP_CONT_FFPROBE_BIN", "ffprobe")
+
+# camrip filter (2026-08-17): theatrical camcorder recordings must NOT land.
+# hard (default) — CAM/LIKELY_CAM discards the file + tries the next link.
+# soft — keep the file with a filter_warnings note. SUSPICIOUS is always soft.
+CAM_ACTION = os.environ.get("SP_CAM_ACTION", "hard")   # soft|hard
+CAM_MIN_DAYS = int(os.environ.get("SP_CAM_MIN_DAYS", "45"))  # release-window grace
+CAM_VISUAL = os.environ.get("SP_CAM_VISUAL", "1")  # 0 disables T7 frame sampling
+CAM_MIN_DURATION_S = int(os.environ.get("SP_CAM_MIN_DURATION_S", "1500"))  # movie-length floor (tests lower it)
